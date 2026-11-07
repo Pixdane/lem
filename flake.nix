@@ -153,16 +153,17 @@
 
         # lem-terminal native helper (terminal.so), compiled from
         # extensions/terminal/terminal.c against libvterm. Dynamically linked:
-        # the Nix stdenv records an RPATH to the libvterm store path, so it
+        # the Nix stdenv records the path to the libvterm store library, so it
         # resolves at runtime without any bundling or relinking. lem-terminal/
         # ffi.lisp loads it by the literal name "terminal.so" (even on macOS),
         # so the output keeps the .so suffix on both platforms.
         #
         # Uses libvterm-neovim, which is Leonerd's modern libvterm that
-        # terminal.c targets. Plain pkgs.libvterm is a different, abandoned
-        # glib/curses-based library with an incompatible API. libvterm-neovim
-        # is Linux-only in nixpkgs, hence the Linux gate at the use sites, so
-        # -lutil (forkpty) is unconditional here.
+        # terminal.c targets; nixpkgs builds it for Unix systems including
+        # Darwin. Plain pkgs.libvterm is a different, abandoned glib/curses-
+        # based library with an incompatible API. forkpty comes from libutil on
+        # Linux but from libSystem on Darwin, which has no libutil, so -lutil
+        # is only passed on Linux.
         terminal-so = pkgs.stdenv.mkDerivation {
           pname = "lem-terminal-so";
           version = "0.1.0";
@@ -172,7 +173,7 @@
             $CC -shared -fPIC -o terminal.so terminal.c \
               -I${pkgs.libvterm-neovim}/include \
               -L${pkgs.libvterm-neovim}/lib -lvterm \
-              -lutil
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "-lutil"}
           '';
           installPhase = ''
             mkdir -p $out/lib
@@ -407,7 +408,8 @@
             install lem $out/bin
             wrapProgram $out/bin/lem \
               --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH" \
-              --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH"
+              --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH" \
+              --set-default LEM_BUILD_SRC "$src"
             runHook postInstall
           '';
         };
@@ -427,15 +429,12 @@
               cl-charms
               cl-setlocale
             ]);
-          nativeLibs =
-            [
-              pkgs.ncurses
-              pkgs.tree-sitter
-              ts-wrapper
-            ]
-            # libvterm is Linux-only in nixpkgs, so terminal-so (and thus the
-            # terminal extension) is only available on Linux Nix builds.
-            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [terminal-so];
+          nativeLibs = [
+            pkgs.ncurses
+            pkgs.tree-sitter
+            ts-wrapper
+            terminal-so
+          ];
           # Add tree-sitter grammar paths (grammars don't have lib/ subdir)
           installPhase = ''
             runHook preInstall
@@ -443,7 +442,8 @@
             install lem $out/bin
             wrapProgram $out/bin/lem \
               --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${grammarSearchPath}" \
-              --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH"
+              --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH" \
+              --set-default LEM_BUILD_SRC "$src"
 
             mkdir -p $out/share/applications
             cp ${makeLemDesktopItem {terminal = true;}}/share/applications/* $out/share/applications
@@ -478,16 +478,16 @@
               SDL2_image
               tree-sitter
               ts-wrapper
-            ])
-            # libvterm is Linux-only in nixpkgs (see lem-ncurses).
-            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [terminal-so];
+              terminal-so
+            ]);
           installPhase = ''
             runHook preInstall
             mkdir -p $out/bin
             install lem $out/bin
             wrapProgram $out/bin/lem \
               --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${grammarSearchPath}" \
-              --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH"
+              --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH" \
+              --set-default LEM_BUILD_SRC "$src"
 
             mkdir -p $out/share/applications
             cp ${makeLemDesktopItem {terminal = false;}}/share/applications/* $out/share/applications
@@ -536,6 +536,7 @@
               c-webview
               pkgs.tree-sitter
               ts-wrapper
+              terminal-so
             ];
 
           postPatch =
