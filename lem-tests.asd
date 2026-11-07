@@ -82,6 +82,7 @@
                (:file "filer")
                (:file "listener-mode")
                (:file "interface")
+               (:file "multi-column-list")
                (:file "attribute")
                (:file "display-cache")
                (:file "visual-line"))
