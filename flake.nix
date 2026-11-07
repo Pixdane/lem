@@ -121,13 +121,7 @@
 
         # --- Tree-sitter Support ---
 
-        # Use local tree-sitter-cl if available, otherwise use nvfetcher source
-        tree-sitter-cl-src = let
-          localPath = /home/user/lem-project/tree-sitter-cl;
-        in
-          if builtins.pathExists localPath
-          then localPath
-          else sources.tree-sitter-cl.src;
+        tree-sitter-cl-src = sources.tree-sitter-cl.src;
 
         # C wrapper library for tree-sitter (handles by-value struct returns)
         ts-wrapper = pkgs.stdenv.mkDerivation {
@@ -201,6 +195,52 @@
             pkgs.tree-sitter
             ts-wrapper
           ];
+          postPatch = ''
+            # Both :unix and :darwin match on macOS, so CFFI picks whichever
+            # clause comes first. CFFI's :unix branch lists .so names, which do
+            # not exist on Darwin: move the :darwin clause in front by swapping
+            # the two lines (single-line patterns, since indented-string
+            # stripping would eat the continuation indent of a multi-line one).
+            substituteInPlace src/ffi.lisp \
+              --replace-fail \
+                '(:unix (:or "libtree-sitter.so.0" "libtree-sitter.so"))' \
+                '@@tree-sitter-unix@@' \
+              --replace-fail \
+                '(:darwin (:or "libtree-sitter.0.dylib" "libtree-sitter.dylib"))' \
+                '(:unix (:or "libtree-sitter.so.0" "libtree-sitter.so"))' \
+              --replace-fail \
+                '@@tree-sitter-unix@@' \
+                '(:darwin (:or "libtree-sitter.0.dylib" "libtree-sitter.dylib"))' \
+              --replace-fail \
+                '(:unix "libts-wrapper.so")' \
+                '@@ts-wrapper-unix@@' \
+              --replace-fail \
+                '(:darwin "libts-wrapper.dylib")' \
+                '(:unix "libts-wrapper.so")' \
+              --replace-fail \
+                '@@ts-wrapper-unix@@' \
+                '(:darwin "libts-wrapper.dylib")' \
+              --replace-fail \
+                '(ignore-errors (uiop:directory-exists-p path))' \
+                '(or (consp path) (ignore-errors (uiop:directory-exists-p path)))'
+
+            # The generic "parser" lookup below the /lib case searches NAME in
+            # the whole directory string. For the "nix" language that matches
+            # "/nix/store" in *every* entry, so it returned the first grammar
+            # on LD_LIBRARY_PATH (e.g. tree-sitter-clojure) and loading failed
+            # with "Symbol tree_sitter_nix not found". Require the package
+            # name, as the /lib case above already does.
+            #
+            # Guarded because buildASDFSystem applies postPatch twice: once to
+            # produce the patched source, once more while building it.
+            if grep -qF '(when (and (search name dir) (probe-file parser-path))' \
+                 src/language.lisp; then
+              substituteInPlace src/language.lisp \
+                --replace-fail \
+                  '(when (and (search name dir) (probe-file parser-path))' \
+                  '(when (and (search (format nil "tree-sitter-~A" name) dir) (probe-file parser-path))'
+            fi
+          '';
         };
 
         # Tree-sitter language grammars
@@ -217,7 +257,13 @@
           perl = pkgs.tree-sitter-grammars.tree-sitter-perl;
           # Clojure support
           clojure = pkgs.tree-sitter-grammars.tree-sitter-clojure;
+          dockerfile = pkgs.tree-sitter-grammars.tree-sitter-dockerfile;
+          toml = pkgs.tree-sitter-grammars.tree-sitter-toml;
+          typst = pkgs.tree-sitter-grammars.tree-sitter-typst;
+          wat = pkgs.tree-sitter-grammars.tree-sitter-wat;
         };
+
+        grammarSearchPath = pkgs.lib.concatStringsSep ":" (builtins.attrValues tree-sitter-grammars);
 
         # --- Webview Specific Dependencies ---
 
@@ -396,7 +442,7 @@
             mkdir -p $out/bin
             install lem $out/bin
             wrapProgram $out/bin/lem \
-              --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${tree-sitter-grammars.json}:${tree-sitter-grammars.markdown}:${tree-sitter-grammars.yaml}:${tree-sitter-grammars.nix}:${tree-sitter-grammars.python}:${tree-sitter-grammars.javascript}:${tree-sitter-grammars.typescript}:${tree-sitter-grammars.go}:${tree-sitter-grammars.perl}:${tree-sitter-grammars.clojure}" \
+              --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${grammarSearchPath}" \
               --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH"
 
             mkdir -p $out/share/applications
@@ -440,7 +486,7 @@
             mkdir -p $out/bin
             install lem $out/bin
             wrapProgram $out/bin/lem \
-              --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${tree-sitter-grammars.json}:${tree-sitter-grammars.markdown}:${tree-sitter-grammars.yaml}:${tree-sitter-grammars.nix}:${tree-sitter-grammars.python}:${tree-sitter-grammars.javascript}:${tree-sitter-grammars.typescript}:${tree-sitter-grammars.go}:${tree-sitter-grammars.perl}:${tree-sitter-grammars.clojure}" \
+              --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${grammarSearchPath}" \
               --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH"
 
             mkdir -p $out/share/applications
@@ -507,7 +553,7 @@
                 --set FONTCONFIG_FILE "${pkgs.makeFontsConf {fontDirectories = [pkgs.dejavu_fonts];}}" \
                 --prefix XDG_DATA_DIRS : "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}" \
                 --prefix XDG_DATA_DIRS : "${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}" \
-                --prefix LD_LIBRARY_PATH : "${tree-sitter-grammars.json}:${tree-sitter-grammars.markdown}:${tree-sitter-grammars.yaml}:${tree-sitter-grammars.nix}:${tree-sitter-grammars.python}:${tree-sitter-grammars.javascript}:${tree-sitter-grammars.typescript}:${tree-sitter-grammars.go}:${tree-sitter-grammars.perl}:${tree-sitter-grammars.clojure}"
+                --prefix LD_LIBRARY_PATH : "${grammarSearchPath}"
 
               mkdir -p $out/share/applications
               cp ${makeLemDesktopItem {terminal = false;}}/share/applications/* $out/share/applications
@@ -517,7 +563,7 @@
             ''
             else ''
               wrapProgram $out/bin/lem \
-                --prefix LD_LIBRARY_PATH : "${tree-sitter-grammars.json}:${tree-sitter-grammars.markdown}:${tree-sitter-grammars.yaml}:${tree-sitter-grammars.nix}:${tree-sitter-grammars.python}:${tree-sitter-grammars.javascript}:${tree-sitter-grammars.typescript}:${tree-sitter-grammars.go}:${tree-sitter-grammars.perl}:${tree-sitter-grammars.clojure}"
+                --prefix LD_LIBRARY_PATH : "${grammarSearchPath}"
             '';
         });
       in {
