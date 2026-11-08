@@ -72,6 +72,50 @@
             (uiop:dump-image "lem" :executable t :compression t)
           '';
 
+        # The webview frontend is rebuilt from its npm lockfile instead of
+        # trusting whatever `dist/` happens to be checked in. `src` is scoped to
+        # frontends/server/frontend so Lisp edits never invalidate the JS build,
+        # and only `dist/` is installed because lem-server embeds that tree
+        # verbatim (frontends/server/main.lisp, dump-files) as
+        # frontend/dist/index.html + frontend/dist/assets/*.
+        webviewFrontend = pkgs.buildNpmPackage {
+          pname = "lem-webview-frontend";
+          version = baseVersion;
+          src = ./frontends/server/frontend;
+          # `prefetch-npm-deps frontends/server/frontend/package-lock.json`
+          # (fetcher version 1, the buildNpmPackage default).
+          npmDepsHash = "sha256-eYPepJveNNw6YROqjGZr7446Mu4ABs+Is+g+WUuwwvU=";
+
+          # Keep the platform font intent of the old per-variant dist patch, but
+          # apply it to the frontend source before Vite bundles it instead of
+          # guessing which quote form the minifier picked in the output.
+          postPatch = ''
+            substituteInPlace main.js \
+              --replace-fail "fontName: 'Monospace'" \
+                "fontName: '${if pkgs.stdenv.hostPlatform.isLinux then "DejaVu Sans Mono" else "Menlo"}'"
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            test -f dist/index.html
+            test -f dist/assets/index.js
+            mkdir -p $out
+            cp -r dist $out/dist
+            runHook postInstall
+          '';
+        };
+
+        # Swap the checked-in dist/ for the freshly built bundle before any
+        # further patching so frontend source edits reach the image.
+        # buildASDFSystem runs postPatch twice, so the copy starts from `rm -rf`
+        # and is therefore idempotent, and the store copy's read-only modes are
+        # widened for later dist substitutions.
+        webviewDistPatch = ''
+          rm -rf frontends/server/frontend/dist
+          cp -r ${webviewFrontend}/dist frontends/server/frontend/dist
+          chmod -R u+w frontends/server/frontend/dist
+        '';
+
         sources = import ./_sources/generated.nix {
           inherit
             (pkgs)
@@ -524,13 +568,10 @@
               ts-wrapper
             ];
 
-          postPatch =
-            (o.postPatch or "")
-            + (
-              if pkgs.stdenv.hostPlatform.isLinux
-              then ''sed -i 's/fontName:"Monospace"/fontName:"DejaVu Sans Mono"/' frontends/server/frontend/dist/assets/index.js''
-              else ''sed -i 's/fontName:"Monospace"/fontName:"Menlo"/' frontends/server/frontend/dist/assets/index.js''
-            );
+          # The bundle is rebuilt from source (webviewFrontend), which also
+          # applies the platform font while bundling, so the old post-hoc dist
+          # substitution is no longer needed here.
+          postPatch = (o.postPatch or "") + webviewDistPatch;
 
           postInstall =
             if pkgs.stdenv.hostPlatform.isLinux
