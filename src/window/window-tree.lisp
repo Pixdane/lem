@@ -32,10 +32,17 @@
   (windowp window))
 
 (defun window-tree-map (tree fn)
+  "Call FN for every leaf window in TREE and return NIL.
+
+TREE may be NIL: a frame created by MAKE-FRAME stays treeless until
+SETUP-FRAME populates it, and querying such a frame must not signal a
+type error."
   (labels ((f (tree)
-             (if (window-tree-leaf-p tree)
-                 (funcall fn tree)
-                 (map nil #'f (window-node-children tree)))))
+             (cond ((null tree))
+                   ((window-tree-leaf-p tree)
+                    (funcall fn tree))
+                   (t
+                    (map nil #'f (window-node-children tree))))))
     (f tree)
     nil))
 
