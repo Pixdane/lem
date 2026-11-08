@@ -314,7 +314,9 @@ the same immutable instance for every subsequent message."
                          :width width
                          :height height
                          :use-modeline use-modeline
-                         :kind (cond ((or (lem:floating-window-p window)
+                         :kind (cond ((lem:side-window-p window)
+                                      "side")
+                                     ((or (lem:floating-window-p window)
                                           (lem:attached-window-p window))
                                       "floating")
                                      ((lem:header-window-p window)
@@ -372,7 +374,9 @@ the same immutable instance for every subsequent message."
                          :pixel-width pixel-width
                          :pixel-height pixel-height
                          :use-modeline use-modeline
-                         :kind (cond ((or (lem:floating-window-p window)
+                         :kind (cond ((lem:side-window-p window)
+                                      "side")
+                                     ((or (lem:floating-window-p window)
                                           (lem:attached-window-p window))
                                       "floating")
                                      ((lem:header-window-p window)

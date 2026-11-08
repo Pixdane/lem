@@ -26,12 +26,12 @@ so it is safe to put this in `init.lisp` for every frontend.
 | --- | --- |
 | `:opacity` | the whole editor surface: the window tint, and through it the desktop |
 | `:cell-opacity` | cell backgrounds that differ from the theme background (region, highlight-line, gutters, modeline). `nil` derives it from `:opacity` |
-| `:popup-opacity` | floating windows only - compile/typeout notices and other floating frames. Ordinary splits (REPL, help, compilation buffer, errors) always follow `:opacity` and never `:popup-opacity` |
+| `:popup-opacity` | floating windows only - compile/typeout notices and other floating frames. Sidebars and ordinary splits (REPL, help, compilation buffer, errors) follow `:opacity`, not `:popup-opacity` |
 | `:blur` | native Gaussian blur radius behind the window, in pixels (macOS only) |
 
 `M-x backdrop-opacity-set` (0-100) and `M-x backdrop-blur-set` (px) call
-`set-backdrop` for you, so `C-x C-e` in your init file or `M-:` is enough to
-retune the effect without restarting.
+`set-backdrop` for you. Evaluate `set-backdrop` again (for example, with
+`C-c C-c` in Lisp mode) to retune the effect without restarting.
 
 ### frontend support
 
@@ -43,8 +43,9 @@ retune the effect without restarting.
   undocumented APIs that Apple can change between macOS releases, so treat a
   macOS upgrade as a possible breaking change. The native side is dispatched
   to the main thread through GCD and is only applied while the webview
-  window exists - calls made before it is created are ignored - and it must
-  be called from the editor thread (as `define-command` handlers are).
+  window exists - native calls made before it is created are ignored.
+  Use sequential updates; simultaneous calls from different threads are not
+  serialized.
 - **server in a browser**: the opacity, cell and popup layers are plain CSS
   and work in any browser window; `:blur` is a no-op there. The only blur is
   the fixed 8px `backdrop-filter` that `editor.css` puts on bordered

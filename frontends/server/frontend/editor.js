@@ -473,7 +473,7 @@ class CanvasSurface extends BaseSurface {
       }
       return;
     }
-    // Main / header / modeline surfaces: default background stays clear to
+    // Main / side / header / modeline surfaces: default background stays clear to
     // expose #lem-editor's single rgba tint + native CGS blur without per-cell seams;
     // explicit cell backgrounds (gutters, highlight-line, region, modeline) use cellOpacity.
     if (!isDefaultBg) {
@@ -733,6 +733,7 @@ class HorizontalBorder {
 const viewStyles = {
   header: () => { },
   tile: () => { },
+  side: () => { },
   floating: (option) => ({
     boxSizing: 'border-box',
     borderColor: option.foreground,
@@ -807,6 +808,7 @@ class View {
       case 'header':
         this.mainSurface = this.makeSurface(type, content);
         break;
+      case 'side':
       case 'floating':
         this.mainSurface = this.makeSurface(type, content);
         if (borderShape === 'left-border') {

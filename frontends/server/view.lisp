@@ -40,7 +40,7 @@
   (pixel-width nil :type (or null integer))
   (pixel-height nil :type (or null integer))
   use-modeline
-  kind ; "tile" / "floating" / "header"
+  kind ; "tile" / "side" / "floating" / "header"
   border
   (border-shape nil :type border-shape))
 

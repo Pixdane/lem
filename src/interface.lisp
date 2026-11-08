@@ -224,8 +224,8 @@ Omitted keyword arguments retain their current values. The default method is a n
 Follows the same keyword-update convention as `set-font': omitted keyword
 arguments leave existing settings unchanged, and unsupported frontends ignore it.
 The argument list is the layered model described on `lem-if:set-backdrop'.
-Call it from the editor thread; the macOS webview frontend hands the native
-part to the main thread itself."
+Use commands or sequential Lisp evaluation; concurrent updates are not serialized.
+The macOS webview frontend dispatches the native part to the main thread."
   (apply #'lem-if:set-backdrop
          (implementation)
          (append (when opacity-p (list :opacity opacity))
