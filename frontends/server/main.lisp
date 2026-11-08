@@ -6,6 +6,10 @@
                     (:queue :lem/common/queue)
                     (:mouse :lem-server/mouse))
   (:export :jsonrpc
+           :jsonrpc-backdrop-opacity
+           :jsonrpc-backdrop-cell-opacity
+           :jsonrpc-backdrop-popup-opacity
+           :jsonrpc-backdrop-blur
            :register-method
            :run-tcp-server
            :run-stdio-server
@@ -106,6 +110,14 @@ quits by itself afterwards.")
                    :accessor jsonrpc-display-height)
    (background-color :accessor jsonrpc-background-color)
    (foreground-color :accessor jsonrpc-foreground-color)
+   (backdrop-opacity :initform 1.0d0
+                     :accessor jsonrpc-backdrop-opacity)
+   (backdrop-cell-opacity :initform nil
+                          :accessor jsonrpc-backdrop-cell-opacity)
+   (backdrop-popup-opacity :initform 0.92d0
+                           :accessor jsonrpc-backdrop-popup-opacity)
+   (backdrop-blur :initform 0
+                  :accessor jsonrpc-backdrop-blur)
    (message-queue :initform (queue:make-queue)
                   :reader jsonrpc-message-queue)
    (editor-thread :initform nil
@@ -181,6 +193,7 @@ the same immutable instance for every subsequent message."
       (let ((response (hash "views" (with-error-handler () (get-all-views))
                             "foreground" (lem-core::foreground-color)
                             "background" (lem-core::background-color)
+                            "backdrop" (backdrop-hash jsonrpc)
                             "size" (hash "width" (lem:display-width)
                                          "height" (lem:display-height)))))
         response))))
@@ -520,6 +533,45 @@ the same immutable instance for every subsequent message."
 
 (defun load-css (css-content)
   (notify (lem:implementation) "load-css" (hash "content" css-content)))
+
+(defun clamp-unit-float (value)
+  (max 0.0d0 (min 1.0d0 (coerce value 'double-float))))
+
+(defun backdrop-hash (jsonrpc)
+  (hash "opacity" (jsonrpc-backdrop-opacity jsonrpc)
+        "cellOpacity" (jsonrpc-backdrop-cell-opacity jsonrpc)
+        "popupOpacity" (jsonrpc-backdrop-popup-opacity jsonrpc)))
+
+(defmethod lem-if:set-backdrop ((jsonrpc jsonrpc)
+                                &key (opacity nil opacity-p)
+                                     (cell-opacity nil cell-opacity-p)
+                                     (popup-opacity nil popup-opacity-p)
+                                     (blur nil blur-p))
+  (when opacity-p
+    (check-type opacity real)
+    (setf (jsonrpc-backdrop-opacity jsonrpc) (clamp-unit-float opacity)))
+  (when cell-opacity-p
+    (check-type cell-opacity (or null real))
+    (setf (jsonrpc-backdrop-cell-opacity jsonrpc)
+          (when cell-opacity (clamp-unit-float cell-opacity))))
+  (when popup-opacity-p
+    (check-type popup-opacity real)
+    (setf (jsonrpc-backdrop-popup-opacity jsonrpc) (clamp-unit-float popup-opacity)))
+  (when blur-p
+    (check-type blur real)
+    (setf (jsonrpc-backdrop-blur jsonrpc) (max 0 (truncate blur))))
+  (with-error-handler ()
+    (notify jsonrpc "set-backdrop" (backdrop-hash jsonrpc)))
+  (when (lem:current-frame)
+    (lem:send-event
+     (lambda ()
+       (dolist (frame (lem:all-frames))
+         (dolist (window (append (lem:frame-header-windows frame)
+                                 (lem:window-list frame)
+                                 (lem:frame-floating-windows frame)))
+           (lem-core:need-to-redraw window)))
+       (lem:redraw-display :force t))))
+  t)
 
 (lem:add-hook lem:*switch-to-buffer-hook* 'on-switch-to-buffer)
 

@@ -321,6 +321,7 @@
    :window-leave-hook
    :window-use-modeline-p
    :window-redraw
+   :need-to-redraw
    :current-window
    :last-focused-window
    :window-list
@@ -709,7 +710,8 @@
    :set-font
    :set-font-name
    :set-font-size
-   :set-frame-color)
+   :set-frame-color
+   :set-backdrop)
   ;; color-theme.lisp
   (:export
    :color-theme-names
@@ -839,4 +841,5 @@
    :render-line-on-modeline
    :object-width
    :object-height
-   :set-frame-color))
+   :set-frame-color
+   :set-backdrop))

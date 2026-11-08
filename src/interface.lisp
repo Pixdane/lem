@@ -202,6 +202,37 @@ chrome. The default method is a no-op for frontends that do not support it.")
   "Set the window frame appearance to MODE (:dark or :light)."
   (lem-if:set-frame-color (implementation) mode))
 
+(defgeneric lem-if:set-backdrop (implementation &key opacity cell-opacity popup-opacity blur)
+  (:documentation "Configure window background opacity and backdrop blur on frontends that support it.
+OPACITY, CELL-OPACITY, and POPUP-OPACITY are reals in [0.0, 1.0] (1.0 is opaque;
+CELL-OPACITY may also be NIL to derive automatically from OPACITY).
+OPACITY applies to the whole editor surface, CELL-OPACITY to cell backgrounds
+that differ from the theme background, and POPUP-OPACITY to floating windows
+only (compile/typeout notices and floating frames), never to ordinary splits.
+BLUR is a non-negative integer Gaussian blur radius in pixels (0 disables blur);
+native blur is currently implemented for the macOS webview frontend only.
+Omitted keyword arguments retain their current values. The default method is a no-op.")
+  (:method (implementation &key opacity cell-opacity popup-opacity blur)
+    (declare (ignore implementation opacity cell-opacity popup-opacity blur))
+    nil))
+
+(defun set-backdrop (&key (opacity nil opacity-p)
+                          (cell-opacity nil cell-opacity-p)
+                          (popup-opacity nil popup-opacity-p)
+                          (blur nil blur-p))
+  "Configure background opacity and backdrop blur on the current frontend.
+Follows the same keyword-update convention as `set-font': omitted keyword
+arguments leave existing settings unchanged, and unsupported frontends ignore it.
+The argument list is the layered model described on `lem-if:set-backdrop'.
+Call it from the editor thread; the macOS webview frontend hands the native
+part to the main thread itself."
+  (apply #'lem-if:set-backdrop
+         (implementation)
+         (append (when opacity-p (list :opacity opacity))
+                 (when cell-opacity-p (list :cell-opacity cell-opacity))
+                 (when popup-opacity-p (list :popup-opacity popup-opacity))
+                 (when blur-p (list :blur blur)))))
+
 (defvar *display-background-mode* nil)
 
 (defun implementation ()

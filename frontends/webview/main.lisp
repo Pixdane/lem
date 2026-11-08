@@ -2,7 +2,9 @@
   (:use :cl)
   (:import-from :lem-webview/darwin
    :set-window-appearance
-   :dispatch-set-window-appearance)
+   :dispatch-set-window-appearance
+   :set-window-backdrop
+   :dispatch-set-window-backdrop)
   (:export :*webview-handle*
            :main
            :webview-main
@@ -64,6 +66,15 @@ A watchdog thread hard-exits the process in case the loop fails to stop
 Currently implemented for macOS via darwin.lisp; on other platforms this
 is a no-op. Can be called from any thread."
   (dispatch-set-window-appearance mode))
+
+(defmethod lem-if:set-backdrop :after ((implementation lem-server:jsonrpc)
+                                       &key opacity cell-opacity popup-opacity blur)
+  (declare (ignore opacity cell-opacity popup-opacity blur))
+  (when *webview-handle*
+    (dispatch-set-window-backdrop
+     *webview-handle*
+     :opacity (lem-server:jsonrpc-backdrop-opacity implementation)
+     :blur (lem-server:jsonrpc-backdrop-blur implementation))))
 
 (defun main (&optional (args (uiop:command-line-arguments)))
   (let ((port (lem/common/socket:random-available-port)))

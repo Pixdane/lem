@@ -37,6 +37,63 @@ function computeFontSize(font) {
   ];
 }
 
+const parsedColorCache = new Map();
+let colorProbeCtx = null;
+
+function parseColorRGB(color) {
+  if (!color || typeof color !== 'string') return null;
+  const key = color.trim().toLowerCase();
+  if (parsedColorCache.has(key)) return parsedColorCache.get(key);
+
+  let rgb = null;
+  let m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})(?:[0-9a-f]{2})?$/.exec(key);
+  if (m) {
+    rgb = [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+  } else if ((m = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/.exec(key))) {
+    rgb = [parseInt(m[1], 16) * 17, parseInt(m[2], 16) * 17, parseInt(m[3], 16) * 17];
+  } else if ((m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(key))) {
+    rgb = [Number(m[1]), Number(m[2]), Number(m[3])];
+  } else if (typeof document !== 'undefined') {
+    if (!colorProbeCtx) {
+      const probe = document.createElement('canvas');
+      probe.width = 1;
+      probe.height = 1;
+      colorProbeCtx = probe.getContext('2d');
+    }
+    // Canvas ignores invalid assignments, so a sentinel that differs from the
+    // read-back value means the browser actually understood the color.
+    colorProbeCtx.fillStyle = '#010203';
+    const sentinel = colorProbeCtx.fillStyle;
+    colorProbeCtx.fillStyle = key;
+    const normalized = colorProbeCtx.fillStyle;
+    if (normalized && normalized !== sentinel) {
+      rgb = parseColorRGB(normalized);
+    }
+  }
+
+  parsedColorCache.set(key, rgb);
+  return rgb;
+}
+
+function sameColor(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const ra = parseColorRGB(a);
+  const rb = parseColorRGB(b);
+  if (ra && rb) {
+    return ra[0] === rb[0] && ra[1] === rb[1] && ra[2] === rb[2];
+  }
+  return String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+}
+
+function colorWithAlpha(color, alpha) {
+  if (alpha >= 1) return color;
+  if (alpha <= 0) return 'transparent';
+  const rgb = parseColorRGB(color);
+  if (!rgb) return color;
+  return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha})`;
+}
+
 function drawBlock({ ctx, x, y, width, height, style }) {
   ctx.fillStyle = style;
   ctx.fillRect(x, y, width, height);
@@ -300,7 +357,7 @@ class BaseSurface {
       this.wrapperHasBorder = Boolean(border);
       if (cssClassName) this.wrapper.className = cssClassName;
       this.wrapper.style.position = 'absolute';
-      this.wrapper.style.backgroundColor = this.editor.option.background;
+      this.wrapper.style.backgroundColor = this.editor.popupBackgroundColor();
       this.wrapper.style.zIndex = zindex('floating-window');
       this.wrapper.appendChild(dom);
       getLemEditorElement().appendChild(this.wrapper);
@@ -309,6 +366,12 @@ class BaseSurface {
         dom.className = cssClassName;
       }
       getLemEditorElement().appendChild(dom);
+    }
+  }
+
+  updateBackdrop() {
+    if (this.wrapper) {
+      this.wrapper.style.backgroundColor = this.editor.popupBackgroundColor();
     }
   }
 
@@ -360,8 +423,10 @@ class BaseSurface {
 }
 
 class CanvasSurface extends BaseSurface {
-  constructor({ editor, view, x, y, width, height, styles, isFloating, border, cssClassName }) {
+  constructor({ editor, view, x, y, width, height, styles, isFloating, surfaceRole = 'main', border, cssClassName }) {
     super({ editor });
+    this.isFloating = Boolean(isFloating);
+    this.surfaceRole = surfaceRole;
 
     const canvas = this.setupCanvas(styles);
     this.setupDOM({ dom: canvas, isFloating, border, cssClassName });
@@ -391,33 +456,76 @@ class CanvasSurface extends BaseSurface {
     ctx.scale(ratio, ratio);
   }
 
-  drawBlock(x, y, width, height, color) {
-    const option = this.editor.option;
-    this.drawingQueue.push(function(ctx) {
+  paintCellBackground(ctx, x, y, width, height, style) {
+    const editor = this.editor;
+    if (!editor.isTransparent()) {
+      drawBlock({ ctx, x, y, width, height, style });
+      return;
+    }
+    ctx.clearRect(x, y, width, height);
+    const isDefaultBg = !style || sameColor(style, editor.option.background);
+    if (this.surfaceRole === 'floating') {
+      // Floating wrapper already renders popupBackgroundColor() + CSS backdrop-filter;
+      // keep default cells transparent so they don't double-darken, and keep selection
+      // / menu focus highlights crisp inside the popup.
+      if (!isDefaultBg) {
+        drawBlock({ ctx, x, y, width, height, style });
+      }
+      return;
+    }
+    // Main / header / modeline surfaces: default background stays clear to
+    // expose #lem-editor's single rgba tint + native CGS blur without per-cell seams;
+    // explicit cell backgrounds (gutters, highlight-line, region, modeline) use cellOpacity.
+    if (!isDefaultBg) {
       drawBlock({
         ctx,
-        x: x * option.fontWidth,
-        y: y * option.fontHeight,
-        width: width * option.fontWidth,
-        height: height * option.fontHeight,
-        style: color,
-      })
+        x,
+        y,
+        width,
+        height,
+        style: colorWithAlpha(style, editor.effectiveCellOpacity()),
+      });
+    }
+  }
+
+  updateBackdrop() {
+    super.updateBackdrop();
+    if (this.isFloating && this.mainDOM) {
+      this.mainDOM.style.backgroundColor = this.editor.isTransparent()
+        ? 'transparent'
+        : this.editor.option.background;
+    }
+  }
+
+  drawBlock(x, y, width, height, color) {
+    const option = this.editor.option;
+    const surface = this;
+    this.drawingQueue.push(function(ctx) {
+      surface.paintCellBackground(
+        ctx,
+        x * option.fontWidth,
+        y * option.fontHeight,
+        width * option.fontWidth,
+        height * option.fontHeight,
+        color,
+      );
     });
   }
 
   drawText(x, y, text, textWidth, attribute, font) {
     const option = this.editor.option;
+    const surface = this;
     this.drawingQueue.push(function(ctx) {
       font = font ? `${option.fontSize}px ${font}` : option.font;
       if (!attribute) {
-        drawBlock({
+        surface.paintCellBackground(
           ctx,
-          x: x * option.fontWidth,
-          y: y * option.fontHeight,
-          width: textWidth * option.fontWidth,
-          height: option.fontHeight,
-          style: option.background,
-        });
+          x * option.fontWidth,
+          y * option.fontHeight,
+          textWidth * option.fontWidth,
+          option.fontHeight,
+          option.background,
+        );
         drawText({
           ctx,
           x: x * option.fontWidth,
@@ -447,14 +555,14 @@ class CanvasSurface extends BaseSurface {
         }
         const gx = x * option.fontWidth;
         const gy = y * option.fontHeight;
-        drawBlock({
+        surface.paintCellBackground(
           ctx,
-          x: gx,
-          y: gy,
-          width: textWidth * option.fontWidth,
-          height: option.fontHeight,
-          style: background,
-        });
+          gx,
+          gy,
+          textWidth * option.fontWidth,
+          option.fontHeight,
+          background,
+        );
         drawText({
           ctx,
           x: gx,
@@ -498,11 +606,14 @@ class CanvasSurface extends BaseSurface {
 class HTMLSurface extends BaseSurface {
   constructor({ editor, x, y, width, height, styles, option, isFloating, border, html }) {
     super({ editor });
+    this.isFloating = Boolean(isFloating);
 
     const iframe = document.createElement('iframe');
     this.setupDOM({ dom: iframe, isFloating, border });
     iframe.style.position = 'absolute';
-    iframe.style.backgroundColor = option.background;
+    iframe.style.backgroundColor = (editor.isTransparent() && !isFloating)
+      ? 'transparent'
+      : option.background;
     iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
     iframe.srcdoc = html;
     iframe.addEventListener('load', () => {
@@ -533,6 +644,15 @@ class HTMLSurface extends BaseSurface {
 
   evalIn(code) {
     return this.iframe.contentWindow.eval(code);
+  }
+
+  updateBackdrop() {
+    super.updateBackdrop();
+    if (this.iframe) {
+      this.iframe.style.backgroundColor = (this.editor.isTransparent() && !this.isFloating)
+        ? 'transparent'
+        : this.editor.option.background;
+    }
   }
 }
 
@@ -836,6 +956,15 @@ class View {
     }
   }
 
+  updateBackdrop() {
+    if (this.mainSurface && this.mainSurface.updateBackdrop) {
+      this.mainSurface.updateBackdrop();
+    }
+    if (this.modelineSurface && this.modelineSurface.updateBackdrop) {
+      this.modelineSurface.updateBackdrop();
+    }
+  }
+
   makeSurface(type, content) {
     switch (type) {
       case 'html':
@@ -876,6 +1005,7 @@ class View {
       editor: this.editor,
       border,
       isFloating,
+      surfaceRole: isFloating ? 'floating' : 'main',
       view: this,
       cssClassName: ((isFloating && border) ? 'lem-editor__floating-window--bordered' : null),
     });
@@ -891,6 +1021,7 @@ class View {
       editor: this.editor,
       view: this,
       isFloating: this.kind === 'floating',
+      surfaceRole: this.kind === 'floating' ? 'floating' : 'modeline',
       border: 0,
       styles: { zIndex: zindex('modeline') },
       cssClassName: 'lem-editor__mode-line',
@@ -1151,6 +1282,11 @@ export class Editor {
     this.cursorType = 'box';
 
     this.viewMap = new Map();
+    this.backdrop = {
+      opacity: 1.0,
+      cellOpacity: null,
+      popupOpacity: 0.92,
+    };
 
     this.jsonrpc = new JSONRPC(url, {
       onClosed: () => {
@@ -1186,6 +1322,7 @@ export class Editor {
       'get-display-size': this.getDisplaySize.bind(this),
       'load-css': this.loadCSS.bind(this),
       'update-cursor-shape': this.updateCursorShape.bind(this),
+      'set-backdrop': this.setBackdrop.bind(this),
     });
 
     this.login();
@@ -1196,7 +1333,7 @@ export class Editor {
 
   init() {
     window.addEventListener('resize', this.boundedHandleResize);
-    document.getElementsByTagName('html')[0].style['background-color'] = '#333';
+    this.applyBackdrop();
     getLemEditorElement().appendChild(this.cursorOverlay);
   }
 
@@ -1286,6 +1423,9 @@ export class Editor {
       foreground: this.option.foreground,
       background: this.option.background,
     }, (response) => {
+      if (response.backdrop) {
+        this.setBackdrop(response.backdrop);
+      }
       this.updateForeground(response.foreground);
       this.updateBackground(response.background);
       if (response.views) {
@@ -1304,12 +1444,67 @@ export class Editor {
     this.input.updateForeground(color);
   }
 
+  isTransparent() {
+    return this.backdrop.opacity < 1.0;
+  }
+
+  effectiveCellOpacity() {
+    if (this.backdrop.cellOpacity != null) {
+      return this.backdrop.cellOpacity;
+    }
+    return Math.min(1.0, Math.max(0.5, this.backdrop.opacity * 0.85));
+  }
+
+  popupBackgroundColor() {
+    return this.isTransparent()
+      ? colorWithAlpha(this.option.background, this.backdrop.popupOpacity)
+      : this.option.background;
+  }
+
+  applyBackdrop() {
+    const root = document.documentElement;
+    const body = document.body;
+    const element = getLemEditorElement();
+    if (this.isTransparent()) {
+      if (root) root.style.backgroundColor = 'transparent';
+      if (body) body.style.backgroundColor = 'transparent';
+      if (element) {
+        element.style.backgroundColor = colorWithAlpha(
+          this.option.background,
+          this.backdrop.opacity,
+        );
+      }
+      this.input.updateBackground(this.popupBackgroundColor());
+    } else {
+      if (root) root.style.backgroundColor = '#333';
+      if (body) body.style.backgroundColor = '';
+      if (element) element.style.backgroundColor = this.option.background;
+      this.input.updateBackground(this.option.background);
+    }
+    for (const view of this.viewMap.values()) {
+      view.updateBackdrop();
+    }
+  }
+
+  setBackdrop({ opacity, cellOpacity, popupOpacity }) {
+    if (typeof opacity === 'number') {
+      this.backdrop.opacity = Math.max(0, Math.min(1, opacity));
+    }
+    if (cellOpacity !== undefined) {
+      this.backdrop.cellOpacity = (typeof cellOpacity === 'number')
+        ? Math.max(0, Math.min(1, cellOpacity))
+        : null;
+    }
+    if (typeof popupOpacity === 'number') {
+      this.backdrop.popupOpacity = Math.max(0, Math.min(1, popupOpacity));
+    }
+    this.applyBackdrop();
+  }
+
   updateBackground(color) {
     if (color == null) return;
     this.option.background = color;
-    this.input.updateBackground(color);
-    const element = getLemEditorElement();
-    element.style.backgroundColor = color;
+    this.applyBackdrop();
   }
 
   makeView({ id, x, y, width, height, pixelX, pixelY, pixelWidth, pixelHeight, use_modeline, kind, type, content, border, border_shape }) {
