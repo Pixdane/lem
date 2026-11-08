@@ -556,12 +556,14 @@ the same immutable instance for every subsequent message."
          (change-view-to-html (lem:current-window) (lem:html-buffer-html buffer)))))
 
 (defun change-view-to-editor (window)
+  (setf (view-rendered-html (lem:window-view window)) nil)
   (notify* (lem:implementation)
            "change-view"
            (hash "viewInfo" (view-id-hash (lem:window-view window))
                  "type" "editor")))
 
 (defun change-view-to-html (window content)
+  (setf (view-rendered-html (lem:window-view window)) content)
   (notify* (lem:implementation)
            "change-view"
            (hash "viewInfo" (view-id-hash (lem:window-view window))

@@ -154,6 +154,9 @@ The WebSocket transport keeps connections alive across idle periods:
 browser client re-runs `login` after reconnecting. A login invalidates the
 server's per-window line caches and redraws, so the client receives the full
 view state instead of only the lines changed since the cache was filled.
+Views also retain the last rendered HTML on the server, so login snapshots
+include dynamically generated content such as the tabbar, including explicit
+empty pages. Clients rebuild their canvas and HTML views from this snapshot.
 `frontends/server/frontend/dist` is a committed build artifact served by the
 server, so a build that runs the GUI must regenerate it from the frontend
 sources.
