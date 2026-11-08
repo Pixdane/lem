@@ -52,3 +52,10 @@
     (testing "negative radii disable blur instead of being rejected"
       (backdrop-blur-set -5)
       (ok (= 0 (backdrop-recording-blur implementation))))))
+
+(deftest darwin-transparency-feature-flag
+  (testing "the feature flag is present exactly on Darwin builds"
+    #+darwin
+    (ok (member :darwin-transparency *features*))
+    #-darwin
+    (ok (not (member :darwin-transparency *features*)))))

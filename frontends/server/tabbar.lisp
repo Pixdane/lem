@@ -29,6 +29,9 @@
    (need-update
     :initform nil
     :accessor tabbar-need-update-p)
+   (last-opacity
+    :initform nil
+    :accessor tabbar-window-last-opacity)
    (buffer-list
     :accessor tabbar-window-buffer-list)))
 
@@ -61,18 +64,30 @@
     (error (e)
       (message "~A" e))))
 
-(defun generate-html ()
-  (let* ((impl (lem:implementation))
-         (opacity (if (typep impl 'lem-server:jsonrpc)
-                      (lem-server:jsonrpc-backdrop-opacity impl)
-                      1.0d0))
-         (transparent-p (< opacity 1.0d0))
+(defun current-backdrop-opacity ()
+  "Return the active frontend's backdrop opacity as a double float in [0, 1].
+Frontends without backdrop support (ncurses, SDL2) report 1.0d0 so the
+tabbar keeps its solid, fully opaque palette there."
+  (let ((impl (lem:implementation)))
+    (if (typep impl 'lem-server:jsonrpc)
+        (lem-server:jsonrpc-backdrop-opacity impl)
+        1.0d0)))
+
+(defun generate-html (&optional (opacity (current-backdrop-opacity)))
+  (let* ((transparent-p (< opacity 1.0d0))
+         ;; In transparent mode the parent document already paints the
+         ;; editor background tint (rgba(editor_bg, opacity)) across the whole
+         ;; viewport, and this iframe is transparent. So the page itself must
+         ;; stay transparent; only inactive tabs and the leftover strip get a
+         ;; light black shade on top of that tint, which keeps the active tab
+         ;; visibly lighter without stacking alpha on top of alpha.
+         (page-bg (if transparent-p "transparent" "#181818"))
          (editor-bg (let ((bg (lem:background-color)))
                       (if bg
                           (lem:color-to-hex-string (lem:parse-color bg))
                           "#2d2d2d")))
          (tab-bg (if transparent-p
-                     (format nil "rgba(24, 24, 24, ~,2F)" (min 1.0d0 (* opacity 0.85d0)))
+                     (format nil "rgba(0, 0, 0, ~,2F)" (min 1.0d0 (* opacity 0.20d0)))
                      "#181818"))
          ;; Translucent overlays composite correctly over the see-through
          ;; tabbar; the opaque case keeps the original solid colors.
@@ -84,6 +99,7 @@
     (format out "<style>
 /* ===== Theme tokens ===== */
 :root {
+  --page-bg: ~A;
   --tab-bg: ~A;
   --tab-bg-hover: ~A;
   --tab-bg-active: ~A;
@@ -92,14 +108,14 @@
   --tab-border: ~A;
   --tab-accent: #4cc2ff; /* Zed-like cool color */
   --tab-dirty: #e5c07b; /* Orange for modified buffers */
-}" tab-bg tab-bg-hover tab-active-bg tab-border)
+}" page-bg tab-bg tab-bg-hover tab-active-bg tab-border)
     (write-line "
 
 /* ===== Page base ===== */
 html, body {
   margin: 0; padding: 0;
   width: 100%; height: 100%;
-  background: var(--tab-bg);
+  background: var(--page-bg);
   color: var(--tab-fg);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
@@ -113,13 +129,21 @@ html, body {
   box-sizing: border-box;
   padding: 0;
   margin: 0;
-  background: var(--tab-bg);
-  box-shadow: inset 0 -1px 0 0 var(--tab-border);
+  background: transparent;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
 }
 .lem-editor__tabbar::-webkit-scrollbar { display: none; }
+
+/* Strip remaining to the right of the last tab: same look as an inactive
+   tab, and it collapses to zero width once the buttons overflow. */
+.lem-editor__tabbar::after {
+  content: \"\";
+  flex: 1 0 0;
+  background: var(--tab-bg);
+  box-shadow: inset 0 -1px 0 0 var(--tab-border);
+}
 
 /* ===== Tab button ===== */
 .lem-editor__tabbar-button {
@@ -127,7 +151,8 @@ html, body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: transparent;
+  background: var(--tab-bg);
+  box-shadow: inset 0 -1px 0 0 var(--tab-border);
   border: none;
   border-right: 1px solid var(--tab-border);
   color: var(--tab-fg);
@@ -153,7 +178,8 @@ html, body {
   color: var(--tab-fg-active);
 }
 
-/* active tab */
+/* active tab: fully transparent so the editor tint shows through, with the
+   accent line on top instead of the inactive bottom border */
 .lem-editor__tabbar-button.active {
   background: var(--tab-bg-active);
   color: var(--tab-fg-active);
@@ -309,10 +335,17 @@ buttons.forEach(button => {
 (add-hook *after-load-theme-hook* 'update-on-theme-change)
 
 (defmethod window-redraw ((window tabbar-window) force)
+  ;; FORCE is T whenever any floating window is open (src/display/base.lisp
+  ;; passes it through to header windows), so obeying it would reload this
+  ;; iframe on every keystroke. Only regenerate when the tabbar is dirty or
+  ;; the backdrop opacity actually changed at runtime (set-backdrop).
   (declare (ignore force))
-  (unless (tabbar-need-update-p window)
-    (lem-server::change-view-to-html window (generate-html))
-    (setf (tabbar-need-update-p window) t)))
+  (let ((opacity (current-backdrop-opacity)))
+    (when (or (not (tabbar-need-update-p window))
+              (not (eql opacity (tabbar-window-last-opacity window))))
+      (lem-server::change-view-to-html window (generate-html opacity))
+      (setf (tabbar-window-last-opacity window) opacity
+            (tabbar-need-update-p window) t))))
 
 (defun tabbar-off ()
   (when (and (variable-value 'tabbar :global)

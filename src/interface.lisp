@@ -1,5 +1,9 @@
 (in-package :lem-core)
 
+#+darwin
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (pushnew :darwin-transparency *features*))
+
 (defvar *implementation*)
 
 (defclass implementation ()

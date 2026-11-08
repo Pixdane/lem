@@ -12,6 +12,7 @@ window. All layers are applied at redraw time and glyphs always stay fully
 opaque.
 
 ```lisp
+#+darwin-transparency
 (set-backdrop :opacity 0.85       ; whole-window tint, 1.0 = fully opaque
               :cell-opacity nil   ; nil = derive from opacity (opacity * 0.85, min 0.5)
               :popup-opacity 0.92 ; floating windows only
@@ -19,8 +20,17 @@ opaque.
 ```
 
 Omitted keywords keep their current values. Frontends that do not support the
-feature ignore the call; the default `lem-if:set-backdrop` method is a no-op,
-so it is safe to put this in `init.lisp` for every frontend.
+feature ignore the call; the default `lem-if:set-backdrop` method is a no-op.
+
+On macOS, Lem adds the keyword `:darwin-transparency` to `cl:*features*`
+when the core library is compiled or loaded. Builds that predate this
+support - for example an older Lem installed from a package manager - do not
+define `set-backdrop` at all and do not have the flag. If you share one
+`init.lisp` between such builds, guard the call with the reader conditional
+`#+darwin-transparency` as above: the form is read only by builds that can
+evaluate it, and the others skip it silently. `M-x backdrop-opacity-set` and
+`M-x backdrop-blur-set` exist only in the same builds, so prefer the guarded
+form in a shared config.
 
 | keyword | affects |
 | --- | --- |
