@@ -149,6 +149,11 @@ sequenceDiagram
 | Webview | `lem-webview` | WebKit/Chromium |
 | Server | `lem-server` | JSON-RPC over WebSocket |
 
+`lem-if:get-foreground-color` is optional and returns `NIL` when a frontend
+cannot report a foreground color. Multi-column list headers resolve the theme
+foreground first, then the frontend color; if neither is available, they use a
+plain underline rather than requiring an RGB value.
+
 ## 5. Data Model
 
 ### Buffer

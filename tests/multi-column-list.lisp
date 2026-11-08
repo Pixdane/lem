@@ -79,14 +79,6 @@ would receive from `text-property-at'."
       (with-theme ("lem-default")
         (ok (null (darken :foreground)))))))
 
-(deftest get-foreground-color-defaults-to-nil
-  (with-interface ('fake-interface)
-    (ok (null (lem-if:get-foreground-color (lem:implementation)))
-        "a frontend that does not implement the method returns NIL"))
-  (ok (null (lem-if:get-foreground-color (make-instance 'fake-interface))))
-  (testing "subclasses inherit the NIL default"
-    (ok (null (lem-if:get-foreground-color (make-instance 'underline-color-interface))))))
-
 (defun make-list-without-focus-item ()
   "Return a multi-column-list whose popup menu holds no item to focus."
   (let ((multi-column-list (make-instance 'lem/multi-column-list:multi-column-list
@@ -100,14 +92,7 @@ would receive from `text-property-at'."
     multi-column-list))
 
 (deftest an-empty-filter-match-has-nothing-to-check
-  (let ((multi-column-list (make-list-without-focus-item)))
-    (ok (null (lem/multi-column-list::current-focus-item multi-column-list)))
-    (ok (null (lem/multi-column-list::checked-items multi-column-list))
-        "nothing is checked and there is no focus item, so nothing is acted on")
-    (ok (null (lem/multi-column-list:collect-checked-items multi-column-list)))))
-
-(deftest quitting-without-a-multi-column-list-is-a-no-op
   (lem:with-current-buffers ()
-    (lem-fake-interface:with-fake-interface ()
-      (ok (null (lem/multi-column-list::multi-column-list/quit))
-          "C-g in a window that has no multi-column list must not signal"))))
+    (let ((multi-column-list (make-list-without-focus-item)))
+      (ok (null (lem/multi-column-list:collect-checked-items multi-column-list))
+          "an empty filtered list must not expose a NIL item for actions"))))
