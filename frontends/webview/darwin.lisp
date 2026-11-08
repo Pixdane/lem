@@ -63,6 +63,16 @@
   (sel :pointer)
   (arg :bool))
 
+(cffi:defcfun ("objc_msgSend" objc-msg-send/bool-ret) :bool
+  (self :pointer)
+  (sel :pointer)
+  (arg :pointer))
+
+(cffi:defcfun ("objc_msgSend" objc-msg-send/void-ptr) :void
+  (self :pointer)
+  (sel :pointer)
+  (arg :pointer))
+
 (cffi:defcfun ("objc_msgSend" objc-msg-send/int64-ret) :int64
   (self :pointer)
   (sel :pointer))
@@ -214,7 +224,28 @@ Must be called on the main thread."
           (objc-msg-send/ptr-ptr wkwebview
                                  (sel-register-name "setValue:forKey:")
                                  ns-bool
-                                 ns-key))))
+                                 ns-key)))
+      ;; WebKit paints "overhang areas" — extra layers it creates while the
+      ;; window resizes during the initial load (tiling WMs, FullSizeContentView,
+      ;; fractional cell grids) — with underPageBackgroundColor, which defaults
+      ;; to opaque white. Left alone those layers hide the window blur and
+      ;; leave white strips in the row/column remainders at the viewport's
+      ;; bottom and right edges. setUnderPageBackgroundColor: is public API on
+      ;; macOS 12+; respondsToSelector: keeps older systems working.
+      (let ((under-page-selector (sel-register-name "setUnderPageBackgroundColor:")))
+        (when (objc-msg-send/bool-ret wkwebview
+                                      (sel-register-name "respondsToSelector:")
+                                      under-page-selector)
+          (if transparent-p
+              (let ((clear-color (objc-msg-send/no-arg
+                                  (objc-get-class "NSColor")
+                                  (sel-register-name "clearColor"))))
+                (when (%valid-ptr clear-color)
+                  (objc-msg-send/void-ptr wkwebview under-page-selector clear-color)))
+              ;; A null pointer resets WebKit's default under-page color.
+              (objc-msg-send/void-ptr wkwebview
+                                      under-page-selector
+                                      (cffi:null-pointer))))))
     t))
 
 (cffi:defcallback gcd-apply-window-backdrop :void ((context :pointer))
