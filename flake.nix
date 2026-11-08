@@ -452,6 +452,32 @@
           '';
         });
 
+        # Vite emits the webview's default font option as a template literal,
+        # i.e. `fontName:`Monospace``, so the previous double-quoted
+        # `s/fontName:"Monospace"/.../` sed matched nothing and the font
+        # silently stayed Monospace. buildASDFSystem runs postPatch twice (once
+        # in applyPatches to produce $src, once again in the derivation's
+        # patchPhase), so the substitution is guarded to stay idempotent and the
+        # result is asserted afterwards: a pattern that no longer matches must
+        # fail the build loudly instead of being skipped.
+        defaultWebviewFont =
+          if pkgs.stdenv.hostPlatform.isLinux
+          then "DejaVu Sans Mono"
+          else "Menlo";
+
+        webviewFontPatch = let
+          indexJs = "frontends/server/frontend/dist/assets/index.js";
+        in ''
+          if grep -qF 'fontName:`Monospace`' ${indexJs}; then
+            substituteInPlace ${indexJs} \
+              --replace-fail 'fontName:`Monospace`' 'fontName:`${defaultWebviewFont}`'
+          elif grep -qF 'fontName:"Monospace"' ${indexJs}; then
+            substituteInPlace ${indexJs} \
+              --replace-fail 'fontName:"Monospace"' 'fontName:"${defaultWebviewFont}"'
+          fi
+          grep -qE 'fontName:[`"]${defaultWebviewFont}[`"]' ${indexJs}
+        '';
+
         # 3. Webview Variant
         lem-webview = lem-base.overrideLispAttrs (o: {
           pname = "lem-webview";
@@ -492,13 +518,7 @@
               ts-wrapper
             ];
 
-          postPatch =
-            (o.postPatch or "")
-            + (
-              if pkgs.stdenv.hostPlatform.isLinux
-              then ''sed -i 's/fontName:"Monospace"/fontName:"DejaVu Sans Mono"/' frontends/server/frontend/dist/assets/index.js''
-              else ''sed -i 's/fontName:"Monospace"/fontName:"Menlo"/' frontends/server/frontend/dist/assets/index.js''
-            );
+          postPatch = (o.postPatch or "") + webviewFontPatch;
 
           postInstall =
             if pkgs.stdenv.hostPlatform.isLinux
