@@ -158,6 +158,11 @@ view state instead of only the lines changed since the cache was filled.
 server, so a build that runs the GUI must regenerate it from the frontend
 sources.
 
+Disabling this timeout also disables the socket write timeout: silently dead
+peers are retained until a socket error, and a stalled client can accumulate
+queued output. Account for this when exposing the server beyond a local
+webview.
+
 ## 5. Data Model
 
 ### Buffer
