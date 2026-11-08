@@ -1,0 +1,20 @@
+name: Auto Sync Fork
+
+on:
+  schedule:
+    # GitHub Actions cron 使用 UTC 时间：UTC 18:00 = 北京时间次日 02:00
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Sync base branch with upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 运行在默认分支 custom 上，明确将上游 lem-project:main 同步到本仓库的 base 分支
+          gh repo sync "${{ github.repository }}" -b base
