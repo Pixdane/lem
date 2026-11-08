@@ -151,10 +151,12 @@ sequenceDiagram
 
 The WebSocket transport keeps connections alive across idle periods:
 `server-listen` disables Hunchentoot's 20s connection timeout, and the
-browser client re-runs `login` after reconnecting so the server redraws the
-current view state. `frontends/server/frontend/dist` is a committed build
-artifact served by the server, so a build that runs the GUI must regenerate it
-from the frontend sources.
+browser client re-runs `login` after reconnecting. A login invalidates the
+server's per-window line caches and redraws, so the client receives the full
+view state instead of only the lines changed since the cache was filled.
+`frontends/server/frontend/dist` is a committed build artifact served by the
+server, so a build that runs the GUI must regenerate it from the frontend
+sources.
 
 ## 5. Data Model
 

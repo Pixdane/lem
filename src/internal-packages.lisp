@@ -357,10 +357,12 @@
    :floating-window-set-pixel-size
    :floating-window-pixel-bounds
    :attached-window-p
+   :window-attached-window
    :attach-buffer
    :update-on-display-resized
    :covered-with-floating-window-p
    :redraw-display
+   :need-to-redraw-all-windows
    :clear-screens-of-window-list
    :switch-to-window
    :window-set-pos

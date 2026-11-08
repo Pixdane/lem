@@ -139,6 +139,14 @@ the same immutable instance for every subsequent message."
       (setf (view-cached-id-hash view)
             (hash "id" (view-id view)))))
 
+(defun window-views (window)
+  "Return WINDOW's view followed by its attached window's view, if any."
+  (let ((attached (lem:window-attached-window window)))
+    (if attached
+        (list (lem:window-view window)
+              (lem:window-view attached))
+        (list (lem:window-view window)))))
+
 (defun get-all-views ()
   (if (null (lem:current-frame))
       (vector)
@@ -147,7 +155,7 @@ the same immutable instance for every subsequent message."
              :append (loop :for window :in (append (lem:frame-header-windows frame)
                                                    (lem:window-list frame)
                                                    (lem:frame-floating-windows frame))
-                           :collect (lem:window-view window)))
+                           :append (window-views window)))
        'vector)))
 
 (defmethod resize-display ((jsonrpc jsonrpc) width height)
@@ -184,6 +192,11 @@ the same immutable instance for every subsequent message."
         (alexandria:when-let (color (lem:parse-color foreground))
           (setf (jsonrpc-foreground-color jsonrpc) color)))
       (funcall logged-in-callback)
+
+      ;; A login attaches a fresh set of rendering surfaces on the client.
+      ;; Mark the server-side line caches stale so the client's follow-up
+      ;; redraw re-sends the whole display instead of only changed lines.
+      (lem:send-event #'lem:need-to-redraw-all-windows)
 
       (let ((response (hash "views" (with-error-handler () (get-all-views))
                             "foreground" (lem-core::foreground-color)
