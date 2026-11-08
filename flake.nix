@@ -43,7 +43,7 @@
           else "${baseVersion}-unstable";
 
         # Helper to generate the Lisp build script used by all variants
-        mkBuildScript = {entryPoint ? "lem:main"}:
+        mkBuildScript = {entryPoint ? "lem:main", extraInit ? ""}:
           pkgs.writeText "build-lem.lisp" ''
             (defpackage :nix-cl-user (:use :cl))
             (in-package :nix-cl-user)
@@ -66,6 +66,9 @@
               (setf (symbol-value (find-symbol "*GIT-REVISION*" :lem-core)) ${lispGitRev}
                     (symbol-value (find-symbol "*VERSION*" :lem-core))
                     (uiop:symbol-call :lem-core :get-version-string)))
+
+            ;; Variant specific initialisation, baked into the image
+            ${extraInit}
 
             ;; Dump Image
             (setf uiop:*image-entry-point* #'${entryPoint})
@@ -593,14 +596,191 @@
                 --prefix LD_LIBRARY_PATH : "${tree-sitter-grammars.json}:${tree-sitter-grammars.markdown}:${tree-sitter-grammars.yaml}:${tree-sitter-grammars.nix}:${tree-sitter-grammars.python}:${tree-sitter-grammars.javascript}:${tree-sitter-grammars.typescript}:${tree-sitter-grammars.go}:${tree-sitter-grammars.perl}:${tree-sitter-grammars.clojure}"
             '';
         });
+
+        # Grammar roots for the personal wrapper. Derived here rather than
+        # reusing the long per-variant lists above so this variant stays
+        # self-contained.
+        personalGrammarSearchPath =
+          pkgs.lib.concatStringsSep ":" (builtins.attrValues tree-sitter-grammars);
+
+        # 4. Personal Variant: a single image carrying both the webview and the
+        # ncurses frontends, plus the extras used day to day. On Darwin it is
+        # shipped as a normal .app bundle (WebKit only works in a bundled
+        # executable, and Finder launches it from "/") and the same binary is
+        # exposed as bin/lem for terminal use.
+        lem-personal = lem-base.overrideLispAttrs (o: {
+          pname = "lem-personal";
+          meta.mainProgram = "lem";
+          systems = [
+            "lem-webview"
+            "lem-ncurses"
+            "lem-encodings"
+            "lem-coalton-mode"
+            "tree-sitter-cl"
+            "lem-tree-sitter"
+          ];
+
+          buildScript = mkBuildScript {
+            entryPoint = "lem:main";
+            # The hook is registered with weight -1 so it runs after lem-core's
+            # macOS hook from src/macosx.lisp, which replaces PATH outright.
+            extraInit = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
+              ;; lem-personal: put host tools (nix profile, homebrew, ...) on
+              ;; PATH and start in $HOME when launched from the filesystem root.
+              (lem-core:add-hook
+               lem-core:*after-init-hook*
+               (lambda ()
+                 (flet ((directory-name (dir)
+                          (let* ((name (if (pathnamep dir)
+                                           (uiop:native-namestring dir)
+                                           dir))
+                                 (trimmed (string-right-trim "/" name)))
+                            ;; exec-path returns pathnames with trailing slashes;
+                            ;; "/" itself must survive the trim.
+                            (if (string= trimmed "") name trimmed))))
+                   (let* ((path (uiop:getenv "PATH"))
+                          (user (uiop:getenv "USER"))
+                          (dirs
+                            (remove-duplicates
+                             (loop :for dir
+                                   :in (append
+                                        (list (format nil "~A/.local/bin" (uiop:getenv "HOME"))
+                                              (format nil "/etc/profiles/per-user/~A/bin" user)
+                                              "/run/current-system/sw/bin"
+                                              "/nix/var/nix/profiles/default/bin")
+                                        (lem-core:exec-path))
+                                   :for name = (and dir (directory-name dir))
+                                   :when (and name (uiop:directory-exists-p name))
+                                     :collect name)
+                             :from-end t :test #'string=)))
+                     (setf (uiop:getenv "PATH")
+                           (format nil "~{~A~^:~}"
+                                   (if (and path (string/= path ""))
+                                       (append dirs (list path))
+                                       dirs)))))
+                 (when (uiop:pathname-equal (uiop:getcwd) #P"/")
+                   (setf *default-pathname-defaults* (user-homedir-pathname))
+                   (uiop:chdir (user-homedir-pathname))))
+               -1);
+            '';
+          };
+
+          nativeBuildInputs =
+            (o.nativeBuildInputs or [])
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.libicns];
+
+          lispLibs =
+            o.lispLibs
+            ++ [cl-webview]
+            ++ (with lisp.pkgs; [
+              float-features
+              command-line-arguments
+              cl-charms
+              cl-setlocale
+            ]);
+
+          nativeLibs =
+            [
+              pkgs.stdenv.cc.cc.lib
+              pkgs.ncurses
+              c-webview
+              pkgs.tree-sitter
+              ts-wrapper
+              terminal-so
+            ]
+            # WebKit/GTK are Linux-only; the terminal helper is shared.
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+              pkgs.webkitgtk_4_1
+              pkgs.webkitgtk_6_0
+              pkgs.gtk3
+            ];
+
+          # The webview bundle is rebuilt from source (webviewFrontend), which
+          # also applies the platform font while bundling; the checked-in dist
+          # must not shadow it.
+          postPatch = (o.postPatch or "") + webviewDistPatch;
+
+          # Overriding installPhase (rather than using postInstall) keeps the
+          # macOS bundle from being wrapped a second time by the base variant.
+          installPhase =
+            if pkgs.stdenv.hostPlatform.isDarwin
+            then ''
+              runHook preInstall
+
+              app="$out/Applications/Lem.app"
+              mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$out/bin"
+              install -m 755 lem "$app/Contents/MacOS/Lem"
+              png2icns "$app/Contents/Resources/Lem.icns" ${./resources/lem.png}
+              cp ${./resources/lem.png} "$app/Contents/Resources/Lem.png"
+
+              cat > "$app/Contents/Info.plist" <<EOF
+              <?xml version="1.0" encoding="UTF-8"?>
+              <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+              <plist version="1.0">
+              <dict>
+                <key>CFBundleName</key>
+                <string>Lem</string>
+                <key>CFBundleDisplayName</key>
+                <string>Lem</string>
+                <key>CFBundleExecutable</key>
+                <string>Lem</string>
+                <key>CFBundleIconFile</key>
+                <string>Lem</string>
+                <key>CFBundleIdentifier</key>
+                <string>com.lem-project.lem</string>
+                <key>CFBundlePackageType</key>
+                <string>APPL</string>
+                <key>CFBundleVersion</key>
+                <string>${baseVersion}</string>
+                <key>CFBundleShortVersionString</key>
+                <string>${baseVersion}</string>${pkgs.lib.optionalString (gitRev != null) ''
+
+                <key>LemGitRevision</key>
+                <string>${gitRev}</string>''}
+                <key>NSHighResolutionCapable</key>
+                <true/>
+              </dict>
+              </plist>
+              EOF
+
+              wrapProgram "$app/Contents/MacOS/Lem" \
+                --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${personalGrammarSearchPath}" \
+                --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH" \
+                --set-default LEM_BUILD_SRC "$src"
+
+              ln -s ../Applications/Lem.app/Contents/MacOS/Lem "$out/bin/lem"
+
+              runHook postInstall
+            ''
+            else ''
+              runHook preInstall
+
+              mkdir -p "$out/bin"
+              install -m 755 lem "$out/bin/lem"
+              wrapProgram "$out/bin/lem" \
+                --set FONTCONFIG_FILE "${pkgs.makeFontsConf {fontDirectories = [pkgs.dejavu_fonts];}}" \
+                --prefix XDG_DATA_DIRS : "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}" \
+                --prefix XDG_DATA_DIRS : "${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}" \
+                --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${personalGrammarSearchPath}" \
+                --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH" \
+                --set-default LEM_BUILD_SRC "$src"
+
+              mkdir -p "$out/share/applications"
+              cp ${makeLemDesktopItem {terminal = false;}}/share/applications/* "$out/share/applications"
+              mkdir -p "$out/share/icons/hicolor/256x256/apps"
+              cp ${./resources/lem.png} "$out/share/icons/hicolor/256x256/apps/lem.png"
+
+              runHook postInstall
+            '';
+        });
       in {
         overlayAttrs = {
-          inherit lem-ncurses lem-sdl2 lem-webview;
+          inherit lem-ncurses lem-sdl2 lem-webview lem-personal;
         };
 
         packages = {
-          inherit lem-ncurses lem-sdl2 lem-webview;
-          default = lem-ncurses;
+          inherit lem-ncurses lem-sdl2 lem-webview lem-personal;
+          default = lem-personal;
         };
 
         apps = {
@@ -616,9 +796,13 @@
             type = "app";
             program = lem-webview;
           };
+          lem-personal = {
+            type = "app";
+            program = lem-personal;
+          };
           default = {
             type = "app";
-            program = lem-ncurses;
+            program = lem-personal;
           };
         };
 
