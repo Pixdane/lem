@@ -121,13 +121,7 @@
 
         # --- Tree-sitter Support ---
 
-        # Use local tree-sitter-cl if available, otherwise use nvfetcher source
-        tree-sitter-cl-src = let
-          localPath = /home/user/lem-project/tree-sitter-cl;
-        in
-          if builtins.pathExists localPath
-          then localPath
-          else sources.tree-sitter-cl.src;
+        tree-sitter-cl-src = sources.tree-sitter-cl.src;
 
         # C wrapper library for tree-sitter (handles by-value struct returns)
         ts-wrapper = pkgs.stdenv.mkDerivation {
@@ -159,16 +153,17 @@
 
         # lem-terminal native helper (terminal.so), compiled from
         # extensions/terminal/terminal.c against libvterm. Dynamically linked:
-        # the Nix stdenv records an RPATH to the libvterm store path, so it
+        # the Nix stdenv records the path to the libvterm store library, so it
         # resolves at runtime without any bundling or relinking. lem-terminal/
         # ffi.lisp loads it by the literal name "terminal.so" (even on macOS),
         # so the output keeps the .so suffix on both platforms.
         #
         # Uses libvterm-neovim, which is Leonerd's modern libvterm that
-        # terminal.c targets. Plain pkgs.libvterm is a different, abandoned
-        # glib/curses-based library with an incompatible API. libvterm-neovim
-        # is Linux-only in nixpkgs, hence the Linux gate at the use sites, so
-        # -lutil (forkpty) is unconditional here.
+        # terminal.c targets; nixpkgs builds it for Unix systems including
+        # Darwin. Plain pkgs.libvterm is a different, abandoned glib/curses-
+        # based library with an incompatible API. forkpty comes from libutil on
+        # Linux but from libSystem on Darwin, which has no libutil, so -lutil
+        # is only passed on Linux.
         terminal-so = pkgs.stdenv.mkDerivation {
           pname = "lem-terminal-so";
           version = "0.1.0";
@@ -178,7 +173,7 @@
             $CC -shared -fPIC -o terminal.so terminal.c \
               -I${pkgs.libvterm-neovim}/include \
               -L${pkgs.libvterm-neovim}/lib -lvterm \
-              -lutil
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "-lutil"}
           '';
           installPhase = ''
             mkdir -p $out/lib
@@ -201,6 +196,52 @@
             pkgs.tree-sitter
             ts-wrapper
           ];
+          postPatch = ''
+            # Both :unix and :darwin match on macOS, so CFFI picks whichever
+            # clause comes first. CFFI's :unix branch lists .so names, which do
+            # not exist on Darwin: move the :darwin clause in front by swapping
+            # the two lines (single-line patterns, since indented-string
+            # stripping would eat the continuation indent of a multi-line one).
+            substituteInPlace src/ffi.lisp \
+              --replace-fail \
+                '(:unix (:or "libtree-sitter.so.0" "libtree-sitter.so"))' \
+                '@@tree-sitter-unix@@' \
+              --replace-fail \
+                '(:darwin (:or "libtree-sitter.0.dylib" "libtree-sitter.dylib"))' \
+                '(:unix (:or "libtree-sitter.so.0" "libtree-sitter.so"))' \
+              --replace-fail \
+                '@@tree-sitter-unix@@' \
+                '(:darwin (:or "libtree-sitter.0.dylib" "libtree-sitter.dylib"))' \
+              --replace-fail \
+                '(:unix "libts-wrapper.so")' \
+                '@@ts-wrapper-unix@@' \
+              --replace-fail \
+                '(:darwin "libts-wrapper.dylib")' \
+                '(:unix "libts-wrapper.so")' \
+              --replace-fail \
+                '@@ts-wrapper-unix@@' \
+                '(:darwin "libts-wrapper.dylib")' \
+              --replace-fail \
+                '(ignore-errors (uiop:directory-exists-p path))' \
+                '(or (consp path) (ignore-errors (uiop:directory-exists-p path)))'
+
+            # The generic "parser" lookup below the /lib case searches NAME in
+            # the whole directory string. For the "nix" language that matches
+            # "/nix/store" in *every* entry, so it returned the first grammar
+            # on LD_LIBRARY_PATH (e.g. tree-sitter-clojure) and loading failed
+            # with "Symbol tree_sitter_nix not found". Require the package
+            # name, as the /lib case above already does.
+            #
+            # Guarded because buildASDFSystem applies postPatch twice: once to
+            # produce the patched source, once more while building it.
+            if grep -qF '(when (and (search name dir) (probe-file parser-path))' \
+                 src/language.lisp; then
+              substituteInPlace src/language.lisp \
+                --replace-fail \
+                  '(when (and (search name dir) (probe-file parser-path))' \
+                  '(when (and (search (format nil "tree-sitter-~A" name) dir) (probe-file parser-path))'
+            fi
+          '';
         };
 
         # Tree-sitter language grammars
@@ -217,7 +258,13 @@
           perl = pkgs.tree-sitter-grammars.tree-sitter-perl;
           # Clojure support
           clojure = pkgs.tree-sitter-grammars.tree-sitter-clojure;
+          dockerfile = pkgs.tree-sitter-grammars.tree-sitter-dockerfile;
+          toml = pkgs.tree-sitter-grammars.tree-sitter-toml;
+          typst = pkgs.tree-sitter-grammars.tree-sitter-typst;
+          wat = pkgs.tree-sitter-grammars.tree-sitter-wat;
         };
+
+        grammarSearchPath = pkgs.lib.concatStringsSep ":" (builtins.attrValues tree-sitter-grammars);
 
         # --- Webview Specific Dependencies ---
 
@@ -361,7 +408,8 @@
             install lem $out/bin
             wrapProgram $out/bin/lem \
               --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH" \
-              --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH"
+              --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH" \
+              --set-default LEM_BUILD_SRC "$src"
             runHook postInstall
           '';
         };
@@ -381,23 +429,21 @@
               cl-charms
               cl-setlocale
             ]);
-          nativeLibs =
-            [
-              pkgs.ncurses
-              pkgs.tree-sitter
-              ts-wrapper
-            ]
-            # libvterm is Linux-only in nixpkgs, so terminal-so (and thus the
-            # terminal extension) is only available on Linux Nix builds.
-            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [terminal-so];
+          nativeLibs = [
+            pkgs.ncurses
+            pkgs.tree-sitter
+            ts-wrapper
+            terminal-so
+          ];
           # Add tree-sitter grammar paths (grammars don't have lib/ subdir)
           installPhase = ''
             runHook preInstall
             mkdir -p $out/bin
             install lem $out/bin
             wrapProgram $out/bin/lem \
-              --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${tree-sitter-grammars.json}:${tree-sitter-grammars.markdown}:${tree-sitter-grammars.yaml}:${tree-sitter-grammars.nix}:${tree-sitter-grammars.python}:${tree-sitter-grammars.javascript}:${tree-sitter-grammars.typescript}:${tree-sitter-grammars.go}:${tree-sitter-grammars.perl}:${tree-sitter-grammars.clojure}" \
-              --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH"
+              --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${grammarSearchPath}" \
+              --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH" \
+              --set-default LEM_BUILD_SRC "$src"
 
             mkdir -p $out/share/applications
             cp ${makeLemDesktopItem {terminal = true;}}/share/applications/* $out/share/applications
@@ -432,16 +478,16 @@
               SDL2_image
               tree-sitter
               ts-wrapper
-            ])
-            # libvterm is Linux-only in nixpkgs (see lem-ncurses).
-            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [terminal-so];
+              terminal-so
+            ]);
           installPhase = ''
             runHook preInstall
             mkdir -p $out/bin
             install lem $out/bin
             wrapProgram $out/bin/lem \
-              --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${tree-sitter-grammars.json}:${tree-sitter-grammars.markdown}:${tree-sitter-grammars.yaml}:${tree-sitter-grammars.nix}:${tree-sitter-grammars.python}:${tree-sitter-grammars.javascript}:${tree-sitter-grammars.typescript}:${tree-sitter-grammars.go}:${tree-sitter-grammars.perl}:${tree-sitter-grammars.clojure}" \
-              --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH"
+              --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${grammarSearchPath}" \
+              --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH" \
+              --set-default LEM_BUILD_SRC "$src"
 
             mkdir -p $out/share/applications
             cp ${makeLemDesktopItem {terminal = false;}}/share/applications/* $out/share/applications
@@ -490,6 +536,7 @@
               c-webview
               pkgs.tree-sitter
               ts-wrapper
+              terminal-so
             ];
 
           postPatch =
@@ -507,7 +554,7 @@
                 --set FONTCONFIG_FILE "${pkgs.makeFontsConf {fontDirectories = [pkgs.dejavu_fonts];}}" \
                 --prefix XDG_DATA_DIRS : "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}" \
                 --prefix XDG_DATA_DIRS : "${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}" \
-                --prefix LD_LIBRARY_PATH : "${tree-sitter-grammars.json}:${tree-sitter-grammars.markdown}:${tree-sitter-grammars.yaml}:${tree-sitter-grammars.nix}:${tree-sitter-grammars.python}:${tree-sitter-grammars.javascript}:${tree-sitter-grammars.typescript}:${tree-sitter-grammars.go}:${tree-sitter-grammars.perl}:${tree-sitter-grammars.clojure}"
+                --prefix LD_LIBRARY_PATH : "${grammarSearchPath}"
 
               mkdir -p $out/share/applications
               cp ${makeLemDesktopItem {terminal = false;}}/share/applications/* $out/share/applications
@@ -517,7 +564,7 @@
             ''
             else ''
               wrapProgram $out/bin/lem \
-                --prefix LD_LIBRARY_PATH : "${tree-sitter-grammars.json}:${tree-sitter-grammars.markdown}:${tree-sitter-grammars.yaml}:${tree-sitter-grammars.nix}:${tree-sitter-grammars.python}:${tree-sitter-grammars.javascript}:${tree-sitter-grammars.typescript}:${tree-sitter-grammars.go}:${tree-sitter-grammars.perl}:${tree-sitter-grammars.clojure}"
+                --prefix LD_LIBRARY_PATH : "${grammarSearchPath}"
             '';
         });
       in {
