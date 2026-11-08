@@ -22,6 +22,26 @@
         # --- Setup & Helpers ---
         lisp = pkgs.sbcl;
 
+        # Release metadata comes from the checkout instead of being hard-coded:
+        # lem.asd is the source of truth for the base version, and the flake
+        # supplies the git revision used to stamp images and the app bundle.
+        baseVersion = let
+          m = builtins.match ''.*\(defsystem "lem"[[:space:]]+:version "([^"]+)".*'' (builtins.readFile ./lem.asd);
+        in
+          if m != null
+          then builtins.head m
+          else "2.3.0";
+
+        gitRev = inputs.self.shortRev or inputs.self.dirtyShortRev or null;
+        lispGitRev =
+          if gitRev != null
+          then ''"${gitRev}"''
+          else "nil";
+        lemVersion =
+          if gitRev != null
+          then "${baseVersion}-unstable-${gitRev}"
+          else "${baseVersion}-unstable";
+
         # Helper to generate the Lisp build script used by all variants
         mkBuildScript = {entryPoint ? "lem:main"}:
           pkgs.writeText "build-lem.lisp" ''
@@ -34,6 +54,13 @@
 
             ;; Load Systems
             (mapcar #'asdf:load-system (uiop:split-string (uiop:getenv "systems")))
+
+            ;; Stamp the flake revision into the image and refresh *VERSION*,
+            ;; which src/lem.lisp computes at load time from the checkout.
+            (when (find-package :lem-core)
+              (setf (symbol-value (find-symbol "*GIT-REVISION*" :lem-core)) ${lispGitRev}
+                    (symbol-value (find-symbol "*VERSION*" :lem-core))
+                    (uiop:symbol-call :lem-core :get-version-string)))
 
             ;; Dump Image
             (setf uiop:*image-entry-point* #'${entryPoint})
@@ -344,7 +371,7 @@
         # The base derivation that other variants inherit from
         lem-base = lisp.buildASDFSystem {
           pname = "lem-base";
-          version = "unstable";
+          version = lemVersion;
           src = ./.;
           nativeBuildInputs = [pkgs.makeBinaryWrapper];
           lispLibs = commonLispLibs;
