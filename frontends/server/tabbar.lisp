@@ -62,24 +62,37 @@
       (message "~A" e))))
 
 (defun generate-html ()
-  (let ((editor-bg (let ((bg (lem:background-color)))
-                    (if bg
-                        (lem:color-to-hex-string (lem:parse-color bg))
-                        "#2d2d2d"))))
+  (let* ((impl (lem:implementation))
+         (opacity (if (typep impl 'lem-server:jsonrpc)
+                      (lem-server:jsonrpc-backdrop-opacity impl)
+                      1.0d0))
+         (transparent-p (< opacity 1.0d0))
+         (editor-bg (let ((bg (lem:background-color)))
+                      (if bg
+                          (lem:color-to-hex-string (lem:parse-color bg))
+                          "#2d2d2d")))
+         (tab-bg (if transparent-p
+                     (format nil "rgba(24, 24, 24, ~,2F)" (min 1.0d0 (* opacity 0.85d0)))
+                     "#181818"))
+         ;; Translucent overlays composite correctly over the see-through
+         ;; tabbar; the opaque case keeps the original solid colors.
+         (tab-bg-hover (if transparent-p "rgba(128, 128, 128, 0.16)" "#252525"))
+         (tab-border (if transparent-p "rgba(128, 128, 128, 0.22)" "#2a2a2a"))
+         (tab-active-bg (if transparent-p "transparent" editor-bg)))
     (with-output-to-string (out)
     (format out "<head>")
     (format out "<style>
 /* ===== Theme tokens ===== */
 :root {
-  --tab-bg: #181818;
-  --tab-bg-hover: #252525;
+  --tab-bg: ~A;
+  --tab-bg-hover: ~A;
   --tab-bg-active: ~A;
   --tab-fg: #8b8b8b;
   --tab-fg-active: #e0e0e0;
-  --tab-border: #2a2a2a;
+  --tab-border: ~A;
   --tab-accent: #4cc2ff; /* Zed-like cool color */
   --tab-dirty: #e5c07b; /* Orange for modified buffers */
-}" editor-bg)
+}" tab-bg tab-bg-hover tab-active-bg tab-border)
     (write-line "
 
 /* ===== Page base ===== */

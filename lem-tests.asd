@@ -83,6 +83,7 @@
                (:file "listener-mode")
                (:file "interface")
                (:file "multi-column-list")
+               (:file "backdrop")
                (:file "attribute")
                (:file "display-cache")
                (:file "visual-line"))

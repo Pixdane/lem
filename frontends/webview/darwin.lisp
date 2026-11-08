@@ -1,7 +1,9 @@
 (defpackage :lem-webview/darwin
   (:use :cl)
   (:export :set-window-appearance
-           :dispatch-set-window-appearance))
+           :dispatch-set-window-appearance
+           :set-window-backdrop
+           :dispatch-set-window-backdrop))
 (in-package :lem-webview/darwin)
 
 ;;; macOS window appearance via Objective-C runtime
@@ -18,6 +20,19 @@
   (:os-macosx "libobjc.dylib"))
 
 (cffi:use-foreign-library libobjc)
+
+(cffi:define-foreign-library skylight
+  (:os-macosx "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight"))
+
+(ignore-errors
+  (cffi:use-foreign-library skylight))
+
+(cffi:defcfun ("CGSMainConnectionID" cgs-main-connection-id) :uint32)
+
+(cffi:defcfun ("CGSSetWindowBackgroundBlurRadius" cgs-set-window-background-blur-radius) :int32
+  (cid :uint32)
+  (wid :uint32)
+  (radius :int))
 
 (cffi:defcfun ("objc_getClass" objc-get-class) :pointer
   (name :string))
@@ -42,6 +57,26 @@
   (self :pointer)
   (sel :pointer)
   (arg :string))
+
+(cffi:defcfun ("objc_msgSend" objc-msg-send/bool) :void
+  (self :pointer)
+  (sel :pointer)
+  (arg :bool))
+
+(cffi:defcfun ("objc_msgSend" objc-msg-send/int64-ret) :int64
+  (self :pointer)
+  (sel :pointer))
+
+(cffi:defcfun ("objc_msgSend" objc-msg-send/bool-ptr-ret) :pointer
+  (self :pointer)
+  (sel :pointer)
+  (arg :bool))
+
+(cffi:defcfun ("objc_msgSend" objc-msg-send/ptr-ptr) :void
+  (self :pointer)
+  (sel :pointer)
+  (arg1 :pointer)
+  (arg2 :pointer))
 
 ;; Grand Central Dispatch — dispatch work to the main thread without
 ;; needing a webview handle.
@@ -112,6 +147,97 @@ Safe to call from any thread."
                       (:light (cffi:callback gcd-set-light-appearance))))
   mode)
 
+;; The GCD callback cannot carry a Lisp closure, so the values it needs are
+;; staged in these globals just before the block is queued. Updates come from
+;; the editor thread, so the last write wins; a block queued concurrently by an
+;; out-of-band caller may apply the newer values, which is harmless.
+(defvar *pending-backdrop-webview-handle* nil)
+(defvar *pending-backdrop-opacity* 1.0d0)
+(defvar *pending-backdrop-blur* 0)
+
+(defun %valid-ptr (ptr)
+  (and (cffi:pointerp ptr)
+       (not (cffi:null-pointer-p ptr))
+       ptr))
+
+(defun %resolve-nswindow (webview-handle)
+  (or (when (%valid-ptr webview-handle)
+        (%valid-ptr (webview:webview-get-window webview-handle)))
+      (%valid-ptr (%get-key-window))))
+
+(defun %resolve-wkwebview (webview-handle)
+  "Return the WKWebView owned by WEBVIEW-HANDLE, or NIL.
+Only a real webview handle identifies a WKWebView. Falling back to the key
+window's content view is not safe here: -setValue:forKey: with the private
+`drawsBackground' key on a non-WKWebView raises an Objective-C exception that
+CFFI cannot unwind."
+  (when (%valid-ptr webview-handle)
+    ;; WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER = 2 (WKWebView*)
+    (%valid-ptr (webview:webview-get-native-handle webview-handle 2))))
+
+(defun %apply-window-backdrop (webview-handle opacity blur)
+  "Configure NSWindow transparency, SkyLight Gaussian blur, and WKWebView background.
+Must be called on the main thread."
+  (let* ((transparent-p (< opacity 1.0d0))
+         (nswindow (%resolve-nswindow webview-handle))
+         (wkwebview (%resolve-wkwebview webview-handle)))
+    (when nswindow
+      (objc-msg-send/bool nswindow
+                          (sel-register-name "setOpaque:")
+                          (not transparent-p))
+      (let* ((nscolor-class (objc-get-class "NSColor"))
+             (color-sel (sel-register-name
+                         (if transparent-p "clearColor" "windowBackgroundColor")))
+             (bg-color (objc-msg-send/no-arg nscolor-class color-sel)))
+        (when (%valid-ptr bg-color)
+          (objc-msg-send/ptr nswindow
+                             (sel-register-name "setBackgroundColor:")
+                             bg-color)))
+      (objc-msg-send/no-arg nswindow (sel-register-name "invalidateShadow"))
+      (let ((wid (objc-msg-send/int64-ret nswindow (sel-register-name "windowNumber"))))
+        (when (plusp wid)
+          (ignore-errors
+            (cgs-set-window-background-blur-radius
+             (cgs-main-connection-id)
+             wid
+             (if transparent-p (max 0 blur) 0))))))
+    (when wkwebview
+      (let ((ns-bool (objc-msg-send/bool-ptr-ret
+                      (objc-get-class "NSNumber")
+                      (sel-register-name "numberWithBool:")
+                      (not transparent-p)))
+            (ns-key (objc-msg-send/str
+                     (objc-get-class "NSString")
+                     (sel-register-name "stringWithUTF8String:")
+                     "drawsBackground")))
+        (when (and (%valid-ptr ns-bool) (%valid-ptr ns-key))
+          (objc-msg-send/ptr-ptr wkwebview
+                                 (sel-register-name "setValue:forKey:")
+                                 ns-bool
+                                 ns-key))))
+    t))
+
+(cffi:defcallback gcd-apply-window-backdrop :void ((context :pointer))
+  (declare (ignore context))
+  (%apply-window-backdrop *pending-backdrop-webview-handle*
+                          *pending-backdrop-opacity*
+                          *pending-backdrop-blur*))
+
+(defun set-window-backdrop (webview-handle &key (opacity 1.0) (blur 0))
+  "Apply window backdrop settings directly on the main thread."
+  (%apply-window-backdrop webview-handle
+                          (coerce opacity 'double-float)
+                          (max 0 (truncate blur))))
+
+(defun dispatch-set-window-backdrop (webview-handle &key (opacity 1.0) (blur 0))
+  "Schedule window backdrop update onto the macOS main thread via GCD."
+  (setf *pending-backdrop-webview-handle* webview-handle
+        *pending-backdrop-opacity* (coerce opacity 'double-float)
+        *pending-backdrop-blur* (max 0 (truncate blur)))
+  (dispatch-async-f (main-dispatch-queue)
+                    (cffi:null-pointer)
+                    (cffi:callback gcd-apply-window-backdrop)))
+
 ) ; end #+darwin progn
 
 #-darwin
@@ -124,4 +250,12 @@ Safe to call from any thread."
   "No-op: window appearance is only supported on macOS."
   (declare (ignore mode))
   nil)
-)
+(defun set-window-backdrop (webview-handle &key (opacity 1.0) (blur 0))
+  "No-op: native macOS backdrop is only supported on Darwin."
+  (declare (ignore webview-handle opacity blur))
+  nil)
+(defun dispatch-set-window-backdrop (webview-handle &key (opacity 1.0) (blur 0))
+  "No-op: native macOS backdrop is only supported on Darwin."
+  (declare (ignore webview-handle opacity blur))
+  nil)
+) ; end #-darwin progn

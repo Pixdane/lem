@@ -31,6 +31,16 @@
 (defmethod lem-if:update-background ((implementation ncurses) color-name)
   (lem-ncurses/term:update-background-color color-name))
 
+(defmethod lem-if:set-backdrop ((implementation ncurses)
+                                &key (opacity nil opacity-p)
+                                &allow-other-keys)
+  (when opacity-p
+    (check-type opacity real)
+    (if (< opacity 1.0)
+        (lem-ncurses/term:set-default-color (lem:foreground-color) nil)
+        (when (lem:background-color)
+          (lem-ncurses/term:update-background-color (lem:background-color))))))
+
 (defmethod lem-if:display-width ((implementation ncurses))
   (lem-ncurses/term:get-display-width))
 
