@@ -22,8 +22,28 @@
         # --- Setup & Helpers ---
         lisp = pkgs.sbcl;
 
+        # Release metadata comes from the checkout instead of being hard-coded:
+        # lem.asd is the source of truth for the base version, and the flake
+        # supplies the git revision used to stamp images and the app bundle.
+        baseVersion = let
+          m = builtins.match ''.*\(defsystem "lem"[[:space:]]+:version "([^"]+)".*'' (builtins.readFile ./lem.asd);
+        in
+          if m != null
+          then builtins.head m
+          else "2.3.0";
+
+        gitRev = inputs.self.shortRev or inputs.self.dirtyShortRev or null;
+        lispGitRev =
+          if gitRev != null
+          then ''"${gitRev}"''
+          else "nil";
+        lemVersion =
+          if gitRev != null
+          then "${baseVersion}-unstable-${gitRev}"
+          else "${baseVersion}-unstable";
+
         # Helper to generate the Lisp build script used by all variants
-        mkBuildScript = {entryPoint ? "lem:main"}:
+        mkBuildScript = {entryPoint ? "lem:main", extraInit ? ""}:
           pkgs.writeText "build-lem.lisp" ''
             (defpackage :nix-cl-user (:use :cl))
             (in-package :nix-cl-user)
@@ -31,14 +51,73 @@
             ;; Load ASDF
             (load "${lem-base.asdfFasl}/asdf.${lem-base.faslExt}")
             (asdf:initialize-output-translations '(:output-translations :disable-cache :inherit-configuration))
+            ;; Keep the source-registry scan out of local build artifacts. This
+            ;; matters when a checkout carries direnv, qlot or vendored trees:
+            ;; they are not systems and only slow the scan down.
+            (dolist (dir '(".direnv" "result" ".qlot" "ocicl" "node_modules"))
+              (pushnew dir asdf/source-registry:*default-source-registry-exclusions* :test #'equal))
 
             ;; Load Systems
             (mapcar #'asdf:load-system (uiop:split-string (uiop:getenv "systems")))
+
+            ;; Stamp the flake revision into the image and refresh *VERSION*,
+            ;; which src/lem.lisp computes at load time from the checkout.
+            (when (find-package :lem-core)
+              (setf (symbol-value (find-symbol "*GIT-REVISION*" :lem-core)) ${lispGitRev}
+                    (symbol-value (find-symbol "*VERSION*" :lem-core))
+                    (uiop:symbol-call :lem-core :get-version-string)))
+
+            ;; Variant specific initialisation, baked into the image
+            ${extraInit}
 
             ;; Dump Image
             (setf uiop:*image-entry-point* #'${entryPoint})
             (uiop:dump-image "lem" :executable t :compression t)
           '';
+
+        # The webview frontend is rebuilt from its npm lockfile instead of
+        # trusting whatever `dist/` happens to be checked in. `src` is scoped to
+        # frontends/server/frontend so Lisp edits never invalidate the JS build,
+        # and only `dist/` is installed because lem-server embeds that tree
+        # verbatim (frontends/server/main.lisp, dump-files) as
+        # frontend/dist/index.html + frontend/dist/assets/*.
+        webviewFrontend = pkgs.buildNpmPackage {
+          pname = "lem-webview-frontend";
+          version = baseVersion;
+          src = ./frontends/server/frontend;
+          # `prefetch-npm-deps frontends/server/frontend/package-lock.json`
+          # (fetcher version 1, the buildNpmPackage default).
+          npmDepsHash = "sha256-eYPepJveNNw6YROqjGZr7446Mu4ABs+Is+g+WUuwwvU=";
+
+          # Keep the platform font intent of the old per-variant dist patch, but
+          # apply it to the frontend source before Vite bundles it instead of
+          # guessing which quote form the minifier picked in the output.
+          postPatch = ''
+            substituteInPlace main.js \
+              --replace-fail "fontName: 'Monospace'" \
+                "fontName: '${if pkgs.stdenv.hostPlatform.isLinux then "DejaVu Sans Mono" else "Menlo"}'"
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            test -f dist/index.html
+            test -f dist/assets/index.js
+            mkdir -p $out
+            cp -r dist $out/dist
+            runHook postInstall
+          '';
+        };
+
+        # Swap the checked-in dist/ for the freshly built bundle before any
+        # further patching so frontend source edits reach the image.
+        # buildASDFSystem runs postPatch twice, so the copy starts from `rm -rf`
+        # and is therefore idempotent, and the store copy's read-only modes are
+        # widened for later dist substitutions.
+        webviewDistPatch = ''
+          rm -rf frontends/server/frontend/dist
+          cp -r ${webviewFrontend}/dist frontends/server/frontend/dist
+          chmod -R u+w frontends/server/frontend/dist
+        '';
 
         sources = import ./_sources/generated.nix {
           inherit
@@ -391,7 +470,7 @@
         # The base derivation that other variants inherit from
         lem-base = lisp.buildASDFSystem {
           pname = "lem-base";
-          version = "unstable";
+          version = lemVersion;
           src = ./.;
           nativeBuildInputs = [pkgs.makeBinaryWrapper];
           lispLibs = commonLispLibs;
@@ -565,7 +644,7 @@
               terminal-so
             ];
 
-          postPatch = (o.postPatch or "") + webviewFontPatch;
+          postPatch = (o.postPatch or "") + webviewDistPatch + webviewFontPatch;
 
           postInstall =
             if pkgs.stdenv.hostPlatform.isLinux
@@ -587,14 +666,191 @@
                 --prefix LD_LIBRARY_PATH : "${grammarSearchPath}"
             '';
         });
+
+        # Grammar roots for the personal wrapper. Derived here rather than
+        # reusing the long per-variant lists above so this variant stays
+        # self-contained.
+        personalGrammarSearchPath =
+          pkgs.lib.concatStringsSep ":" (builtins.attrValues tree-sitter-grammars);
+
+        # 4. Personal Variant: a single image carrying both the webview and the
+        # ncurses frontends, plus the extras used day to day. On Darwin it is
+        # shipped as a normal .app bundle (WebKit only works in a bundled
+        # executable, and Finder launches it from "/") and the same binary is
+        # exposed as bin/lem for terminal use.
+        lem-personal = lem-base.overrideLispAttrs (o: {
+          pname = "lem-personal";
+          meta.mainProgram = "lem";
+          systems = [
+            "lem-webview"
+            "lem-ncurses"
+            "lem-encodings"
+            "lem-coalton-mode"
+            "tree-sitter-cl"
+            "lem-tree-sitter"
+          ];
+
+          buildScript = mkBuildScript {
+            entryPoint = "lem:main";
+            # The hook is registered with weight -1 so it runs after lem-core's
+            # macOS hook from src/macosx.lisp, which replaces PATH outright.
+            extraInit = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
+              ;; lem-personal: put host tools (nix profile, homebrew, ...) on
+              ;; PATH and start in $HOME when launched from the filesystem root.
+              (lem-core:add-hook
+               lem-core:*after-init-hook*
+               (lambda ()
+                 (flet ((directory-name (dir)
+                          (let* ((name (if (pathnamep dir)
+                                           (uiop:native-namestring dir)
+                                           dir))
+                                 (trimmed (string-right-trim "/" name)))
+                            ;; exec-path returns pathnames with trailing slashes;
+                            ;; "/" itself must survive the trim.
+                            (if (string= trimmed "") name trimmed))))
+                   (let* ((path (uiop:getenv "PATH"))
+                          (user (uiop:getenv "USER"))
+                          (dirs
+                            (remove-duplicates
+                             (loop :for dir
+                                   :in (append
+                                        (list (format nil "~A/.local/bin" (uiop:getenv "HOME"))
+                                              (format nil "/etc/profiles/per-user/~A/bin" user)
+                                              "/run/current-system/sw/bin"
+                                              "/nix/var/nix/profiles/default/bin")
+                                        (lem-core:exec-path))
+                                   :for name = (and dir (directory-name dir))
+                                   :when (and name (uiop:directory-exists-p name))
+                                     :collect name)
+                             :from-end t :test #'string=)))
+                     (setf (uiop:getenv "PATH")
+                           (format nil "~{~A~^:~}"
+                                   (if (and path (string/= path ""))
+                                       (append dirs (list path))
+                                       dirs)))))
+                 (when (uiop:pathname-equal (uiop:getcwd) #P"/")
+                   (setf *default-pathname-defaults* (user-homedir-pathname))
+                   (uiop:chdir (user-homedir-pathname))))
+               -1);
+            '';
+          };
+
+          nativeBuildInputs =
+            (o.nativeBuildInputs or [])
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.libicns];
+
+          lispLibs =
+            o.lispLibs
+            ++ [cl-webview]
+            ++ (with lisp.pkgs; [
+              float-features
+              command-line-arguments
+              cl-charms
+              cl-setlocale
+            ]);
+
+          nativeLibs =
+            [
+              pkgs.stdenv.cc.cc.lib
+              pkgs.ncurses
+              c-webview
+              pkgs.tree-sitter
+              ts-wrapper
+              terminal-so
+            ]
+            # WebKit/GTK are Linux-only; the terminal helper is shared.
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+              pkgs.webkitgtk_4_1
+              pkgs.webkitgtk_6_0
+              pkgs.gtk3
+            ];
+
+          # The webview bundle is rebuilt from source (webviewFrontend), which
+          # also applies the platform font while bundling; the checked-in dist
+          # must not shadow it.
+          postPatch = (o.postPatch or "") + webviewDistPatch;
+
+          # Overriding installPhase (rather than using postInstall) keeps the
+          # macOS bundle from being wrapped a second time by the base variant.
+          installPhase =
+            if pkgs.stdenv.hostPlatform.isDarwin
+            then ''
+              runHook preInstall
+
+              app="$out/Applications/Lem.app"
+              mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$out/bin"
+              install -m 755 lem "$app/Contents/MacOS/Lem"
+              png2icns "$app/Contents/Resources/Lem.icns" ${./resources/lem.png}
+              cp ${./resources/lem.png} "$app/Contents/Resources/Lem.png"
+
+              cat > "$app/Contents/Info.plist" <<EOF
+              <?xml version="1.0" encoding="UTF-8"?>
+              <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+              <plist version="1.0">
+              <dict>
+                <key>CFBundleName</key>
+                <string>Lem</string>
+                <key>CFBundleDisplayName</key>
+                <string>Lem</string>
+                <key>CFBundleExecutable</key>
+                <string>Lem</string>
+                <key>CFBundleIconFile</key>
+                <string>Lem</string>
+                <key>CFBundleIdentifier</key>
+                <string>com.lem-project.lem</string>
+                <key>CFBundlePackageType</key>
+                <string>APPL</string>
+                <key>CFBundleVersion</key>
+                <string>${baseVersion}</string>
+                <key>CFBundleShortVersionString</key>
+                <string>${baseVersion}</string>${pkgs.lib.optionalString (gitRev != null) ''
+
+                <key>LemGitRevision</key>
+                <string>${gitRev}</string>''}
+                <key>NSHighResolutionCapable</key>
+                <true/>
+              </dict>
+              </plist>
+              EOF
+
+              wrapProgram "$app/Contents/MacOS/Lem" \
+                --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${personalGrammarSearchPath}" \
+                --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH" \
+                --set-default LEM_BUILD_SRC "$src"
+
+              ln -s ../Applications/Lem.app/Contents/MacOS/Lem "$out/bin/lem"
+
+              runHook postInstall
+            ''
+            else ''
+              runHook preInstall
+
+              mkdir -p "$out/bin"
+              install -m 755 lem "$out/bin/lem"
+              wrapProgram "$out/bin/lem" \
+                --set FONTCONFIG_FILE "${pkgs.makeFontsConf {fontDirectories = [pkgs.dejavu_fonts];}}" \
+                --prefix XDG_DATA_DIRS : "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}" \
+                --prefix XDG_DATA_DIRS : "${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}" \
+                --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${personalGrammarSearchPath}" \
+                --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH" \
+                --set-default LEM_BUILD_SRC "$src"
+
+              mkdir -p "$out/share/applications"
+              cp ${makeLemDesktopItem {terminal = false;}}/share/applications/* "$out/share/applications"
+              mkdir -p "$out/share/icons/hicolor/256x256/apps"
+              cp ${./resources/lem.png} "$out/share/icons/hicolor/256x256/apps/lem.png"
+
+              runHook postInstall
+            '';
+        });
       in {
         overlayAttrs = {
-          inherit lem-ncurses lem-sdl2 lem-webview;
+          inherit lem-ncurses lem-sdl2 lem-webview lem-personal;
         };
 
         packages = {
-          inherit lem-ncurses lem-sdl2 lem-webview;
-          default = lem-ncurses;
+          inherit lem-ncurses lem-sdl2 lem-webview lem-personal;
+          default = lem-personal;
         };
 
         apps = {
@@ -610,9 +866,13 @@
             type = "app";
             program = lem-webview;
           };
+          lem-personal = {
+            type = "app";
+            program = lem-personal;
+          };
           default = {
             type = "app";
-            program = lem-ncurses;
+            program = lem-personal;
           };
         };
 

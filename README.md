@@ -53,6 +53,22 @@ You can also consume `lem` as an overlay in `flake.nix`:
       };
     }
 
+#### Personal fork package
+
+`nix build .#lem-personal` builds one image with the webview and ncurses
+frontends. On macOS, open `result/Applications/Lem.app`; for terminal use,
+run `result/bin/lem -i ncurses`.
+
+This package rebuilds the web frontend from `package-lock.json`, so JavaScript
+changes are included without committing generated `dist/` files. If npm
+dependencies change, refresh `npmDepsHash` in `flake.nix` with
+`prefetch-npm-deps frontends/server/frontend/package-lock.json`.
+
+The image records the flake revision. The macOS bundle keeps numeric version
+fields and stores the revision separately as `LemGitRevision`. The personal
+Darwin startup hook restores host tool paths and starts in the home directory
+when Finder launches the application from `/`.
+
 ### docker
 
 With Docker (terminal version):
