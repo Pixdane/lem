@@ -36,7 +36,14 @@ quits by itself afterwards.")
 (defmethod server-listen ((runner websocket-server-runner) server)
   (let* ((null-stream (make-broadcast-stream))
          (*trace-output* null-stream)
-         (*error-output* null-stream))
+         (*error-output* null-stream)
+         ;; Hunchentoot applies this read/write timeout when CLACK creates the
+         ;; acceptor.  With the 20s default, an idle WebSocket read times out,
+         ;; websocket-driver retries once and then treats it as EOF, dropping
+         ;; idle clients after ~40s.  NIL keeps idle connections alive; sends
+         ;; are queued per connection, so a stalled client blocks only its own
+         ;; transport thread.
+         (hunchentoot:*default-connection-timeout* nil))
     (jsonrpc:server-listen server
                            :mode :websocket
                            :port (websocket-server-runner-port runner)
@@ -132,6 +139,14 @@ the same immutable instance for every subsequent message."
       (setf (view-cached-id-hash view)
             (hash "id" (view-id view)))))
 
+(defun window-views (window)
+  "Return WINDOW's view followed by its attached window's view, if any."
+  (let ((attached (lem:window-attached-window window)))
+    (if attached
+        (list (lem:window-view window)
+              (lem:window-view attached))
+        (list (lem:window-view window)))))
+
 (defun get-all-views ()
   (if (null (lem:current-frame))
       (vector)
@@ -140,7 +155,7 @@ the same immutable instance for every subsequent message."
              :append (loop :for window :in (append (lem:frame-header-windows frame)
                                                    (lem:window-list frame)
                                                    (lem:frame-floating-windows frame))
-                           :collect (lem:window-view window)))
+                           :append (window-views window)))
        'vector)))
 
 (defmethod resize-display ((jsonrpc jsonrpc) width height)
@@ -177,6 +192,11 @@ the same immutable instance for every subsequent message."
         (alexandria:when-let (color (lem:parse-color foreground))
           (setf (jsonrpc-foreground-color jsonrpc) color)))
       (funcall logged-in-callback)
+
+      ;; A login attaches a fresh set of rendering surfaces on the client.
+      ;; Mark the server-side line caches stale so the client's follow-up
+      ;; redraw re-sends the whole display instead of only changed lines.
+      (lem:send-event #'lem:need-to-redraw-all-windows)
 
       (let ((response (hash "views" (with-error-handler () (get-all-views))
                             "foreground" (lem-core::foreground-color)
@@ -536,12 +556,14 @@ the same immutable instance for every subsequent message."
          (change-view-to-html (lem:current-window) (lem:html-buffer-html buffer)))))
 
 (defun change-view-to-editor (window)
+  (setf (view-rendered-html (lem:window-view window)) nil)
   (notify* (lem:implementation)
            "change-view"
            (hash "viewInfo" (view-id-hash (lem:window-view window))
                  "type" "editor")))
 
 (defun change-view-to-html (window content)
+  (setf (view-rendered-html (lem:window-view window)) content)
   (notify* (lem:implementation)
            "change-view"
            (hash "viewInfo" (view-id-hash (lem:window-view window))

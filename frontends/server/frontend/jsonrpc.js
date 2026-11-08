@@ -22,11 +22,12 @@ export class JSONRPC {
   }
 
   close() {
+    this.closed = true;
     if (this.timerId) {
       clearTimeout(this.timerId);
+      this.timerId = null;
     }
     this.webSocket.close();
-    this.closed = true;
   }
 
   on(method, handler) {
@@ -95,7 +96,7 @@ export class JSONRPC {
     this.webSocket.onopen = () => {
       console.log("WebSocket connection established");
       this.connectionEstablished = true;
-      if (this.onConnected) {
+      if (typeof this.onConnected === 'function') {
         this.onConnected();
       }
       this.requestMessageQueue();
@@ -107,13 +108,22 @@ export class JSONRPC {
         `Connection is closed (${event.reason}).`
       );
 
-      if (this.connectionEstablished) {
-        this.onClosed();
+      const wasEstablished = this.connectionEstablished;
+      this.connectionEstablished = false;
+      if (this.closed) {
+        return;
       }
 
+      // Schedule the reconnect before invoking the application callback so a
+      // missing or throwing onClosed cannot prevent recovery.
       this.timerId = setTimeout(() => {
+        this.timerId = null;
         this.connect();
       }, 3000);
+
+      if (wasEstablished && typeof this.onClosed === 'function') {
+        this.onClosed();
+      }
     };
 
     this.webSocket.onerror = (error) => {

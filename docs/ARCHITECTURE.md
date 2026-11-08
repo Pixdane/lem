@@ -154,6 +154,23 @@ cannot report a foreground color. Multi-column list headers resolve the theme
 foreground first, then the frontend color; if neither is available, they use a
 plain underline rather than requiring an RGB value.
 
+The WebSocket transport keeps connections alive across idle periods:
+`server-listen` disables Hunchentoot's 20s connection timeout, and the
+browser client re-runs `login` after reconnecting. A login invalidates the
+server's per-window line caches and redraws, so the client receives the full
+view state instead of only the lines changed since the cache was filled.
+Views also retain the last rendered HTML on the server, so login snapshots
+include dynamically generated content such as the tabbar, including explicit
+empty pages. Clients rebuild their canvas and HTML views from this snapshot.
+`frontends/server/frontend/dist` is a committed build artifact served by the
+server, so a build that runs the GUI must regenerate it from the frontend
+sources.
+
+Disabling this timeout also disables the socket write timeout: silently dead
+peers are retained until a socket error, and a stalled client can accumulate
+queued output. Account for this when exposing the server beyond a local
+webview.
+
 ## 5. Data Model
 
 ### Buffer

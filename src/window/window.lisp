@@ -204,6 +204,21 @@ This is the content area in which the buffer is displayed, without any side marg
     (mapc #'clear-screen (window-list))
     (mapc #'clear-screen (frame-floating-windows (current-frame)))))
 
+(defun need-to-redraw-all-windows (&optional (frame (current-frame)))
+  "Mark every window that REDRAW-DISPLAY repaints as needing a full redraw.
+The next REDRAW-DISPLAY drops the per-window drawing caches and re-sends
+every line to the frontend.  Frontends that recreate their rendering
+surfaces (for example a JSON-RPC client that reconnects) call this so the
+new surfaces receive the whole display instead of only the lines that
+changed since the cache was filled."
+  (flet ((mark (window)
+           (need-to-redraw window)
+           (alexandria:when-let ((attached (window-attached-window window)))
+             (need-to-redraw attached))))
+    (mapc #'mark (frame-header-windows frame))
+    (mapc #'mark (window-list frame))
+    (mapc #'mark (frame-floating-windows frame))))
+
 (defmethod set-last-print-cursor ((window window) x y)
   (setf (window-last-print-cursor-x window) x
         (window-last-print-cursor-y window) y))

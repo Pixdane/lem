@@ -15,6 +15,7 @@
            :view-pixel-height
            :view-use-modeline
            :view-kind
+           :view-rendered-html
            :move-view
            :resize-view))
 (in-package :lem-server/view)
@@ -25,11 +26,14 @@
   '(member nil :drop-curtain :left-border))
 
 (defstruct (view (:constructor %make-view))
+  "Frontend view state, including rendered HTML for complete login snapshots."
   (id (incf *view-id-counter*))
   ;; Memoized {"id": id} hash for hot-path messages (put, clear-eol).
   ;; Immutable once built — id never changes — so it is safe to reuse the
   ;; same instance across every message in a frame.  See VIEW-ID-HASH.
   (cached-id-hash nil)
+  ;; NIL means no rendered HTML yet; "" is a legitimate rendered empty page.
+  (rendered-html nil :type (or null string))
   window
   x
   y
@@ -91,7 +95,10 @@
       (yason:encode-object-element "content"
                                    (let ((buffer (lem:window-buffer (view-window view))))
                                      (when (typep buffer 'lem:html-buffer)
-                                       (lem:html-buffer-html buffer))))
+                                       (if (lem:html-buffer-updated-p buffer)
+                                           (lem:html-buffer-html buffer)
+                                           (or (view-rendered-html view)
+                                               (lem:html-buffer-html buffer))))))
       (yason:encode-object-element "border" (view-border view))
       (yason:encode-object-element "border_shape" (if (view-border-shape view)
                                                       (string-downcase (view-border-shape view)))))))

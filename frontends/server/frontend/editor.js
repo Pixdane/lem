@@ -1153,8 +1153,13 @@ export class Editor {
     this.viewMap = new Map();
 
     this.jsonrpc = new JSONRPC(url, {
+      onConnected: () => {
+        this.login();
+      },
       onClosed: () => {
-        onClosed();
+        if (typeof onClosed === 'function') {
+          onClosed();
+        }
       },
     });
 
@@ -1187,8 +1192,6 @@ export class Editor {
       'load-css': this.loadCSS.bind(this),
       'update-cursor-shape': this.updateCursorShape.bind(this),
     });
-
-    this.login();
 
     this.boundedHandleResize = this.handleResize.bind(this);
     this.focusHiddenInput = this.focusHiddenInput.bind(this);
@@ -1289,6 +1292,10 @@ export class Editor {
       this.updateForeground(response.foreground);
       this.updateBackground(response.background);
       if (response.views) {
+        for (const view of this.viewMap.values()) {
+          view.delete();
+        }
+        this.viewMap.clear();
         for (const view of response.views) {
           this.makeView(view);
         }
