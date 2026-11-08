@@ -208,19 +208,24 @@ the same immutable instance for every subsequent message."
       (when foreground
         (alexandria:when-let (color (lem:parse-color foreground))
           (setf (jsonrpc-foreground-color jsonrpc) color)))
-      (funcall logged-in-callback)
 
       ;; A login attaches a fresh set of rendering surfaces on the client.
       ;; Mark the server-side line caches stale so the client's follow-up
       ;; redraw re-sends the whole display instead of only changed lines.
       (lem:send-event #'lem:need-to-redraw-all-windows)
 
+      ;; Build the initial snapshot before waking the editor thread through
+      ;; LOGGED-IN-CALLBACK: the signal releases the startup semaphore, after
+      ;; which (SETUP-FIRST-FRAME) and (INIT ARGS) run concurrently on the
+      ;; editor thread. Querying views and the theme/frame state afterwards
+      ;; would race those mutations.
       (let ((response (hash "views" (with-error-handler () (get-all-views))
                             "foreground" (lem-core::foreground-color)
                             "background" (lem-core::background-color)
                             "backdrop" (backdrop-hash jsonrpc)
                             "size" (hash "width" (lem:display-width)
                                          "height" (lem:display-height)))))
+        (funcall logged-in-callback)
         response))))
 
 (defun login (jsonrpc logged-in-callback)

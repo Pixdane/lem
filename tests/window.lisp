@@ -193,6 +193,15 @@
         ;; Cleanup
         (lem:delete-window window)))))
 
+(deftest window-list/empty-window-tree
+  (testing "a frame created by MAKE-FRAME has no window tree until SETUP-FRAME"
+    (with-fake-interface ()
+      (ok (null (lem-core::window-tree-flatten nil)))
+      (let ((frame (lem:make-frame nil)))
+        (unwind-protect
+             (ok (null (lem:window-list frame)))
+          (lem:teardown-frame frame))))))
+
 (deftest floating-window/pixel-bounds-partial
   (lem:with-current-buffers ()
     (with-fake-interface ()
