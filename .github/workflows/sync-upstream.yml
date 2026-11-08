@@ -14,7 +14,7 @@ jobs:
     steps:
       - name: Sync base branch with upstream
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         run: |
           # 运行在默认分支 custom 上，明确将上游 lem-project:main 同步到本仓库的 base 分支
           gh repo sync "${{ github.repository }}" -b base
