@@ -10,6 +10,7 @@
            :jsonrpc-backdrop-cell-opacity
            :jsonrpc-backdrop-popup-opacity
            :jsonrpc-backdrop-blur
+           :jsonrpc-backdrop-revision
            :register-method
            :run-tcp-server
            :run-stdio-server
@@ -118,6 +119,10 @@ quits by itself afterwards.")
                            :accessor jsonrpc-backdrop-popup-opacity)
    (backdrop-blur :initform 0
                   :accessor jsonrpc-backdrop-blur)
+   ;; Monotonic counter so the JS frontend can discard snapshots that arrive
+   ;; after a newer one, since native window updates and editor events race.
+   (backdrop-revision :initform 0
+                      :accessor jsonrpc-backdrop-revision)
    (message-queue :initform (queue:make-queue)
                   :reader jsonrpc-message-queue)
    (editor-thread :initform nil
@@ -544,7 +549,8 @@ the same immutable instance for every subsequent message."
 (defun backdrop-hash (jsonrpc)
   (hash "opacity" (jsonrpc-backdrop-opacity jsonrpc)
         "cellOpacity" (jsonrpc-backdrop-cell-opacity jsonrpc)
-        "popupOpacity" (jsonrpc-backdrop-popup-opacity jsonrpc)))
+        "popupOpacity" (jsonrpc-backdrop-popup-opacity jsonrpc)
+        "revision" (jsonrpc-backdrop-revision jsonrpc)))
 
 (defmethod lem-if:set-backdrop ((jsonrpc jsonrpc)
                                 &key (opacity nil opacity-p)
@@ -564,6 +570,7 @@ the same immutable instance for every subsequent message."
   (when blur-p
     (check-type blur real)
     (setf (jsonrpc-backdrop-blur jsonrpc) (max 0 (truncate blur))))
+  (incf (jsonrpc-backdrop-revision jsonrpc))
   (with-error-handler ()
     (notify jsonrpc "set-backdrop" (backdrop-hash jsonrpc)))
   (when (lem:current-frame)

@@ -474,8 +474,9 @@ class CanvasSurface extends BaseSurface {
       return;
     }
     // Main / side / header / modeline surfaces: default background stays clear to
-    // expose #lem-editor's single rgba tint + native CGS blur without per-cell seams;
-    // explicit cell backgrounds (gutters, highlight-line, region, modeline) use cellOpacity.
+    // expose the root viewport's single rgba tint + native CGS blur without
+    // per-cell seams; explicit cell backgrounds (gutters, highlight-line,
+    // region, modeline) use cellOpacity.
     if (!isDefaultBg) {
       drawBlock({
         ctx,
@@ -1289,6 +1290,7 @@ export class Editor {
       cellOpacity: null,
       popupOpacity: 0.92,
     };
+    this.backdropRevision = -1;
 
     this.jsonrpc = new JSONRPC(url, {
       onClosed: () => {
@@ -1468,14 +1470,17 @@ export class Editor {
     const body = document.body;
     const element = getLemEditorElement();
     if (this.isTransparent()) {
-      if (root) root.style.backgroundColor = 'transparent';
-      if (body) body.style.backgroundColor = 'transparent';
-      if (element) {
-        element.style.backgroundColor = colorWithAlpha(
+      // One rgba tint on the root viewport covers the whole window, including
+      // the fractional row/column remainders at the bottom and right edges that
+      // no canvas cell paints.
+      if (root) {
+        root.style.backgroundColor = colorWithAlpha(
           this.option.background,
           this.backdrop.opacity,
         );
       }
+      if (body) body.style.backgroundColor = 'transparent';
+      if (element) element.style.backgroundColor = 'transparent';
       this.input.updateBackground(this.popupBackgroundColor());
     } else {
       if (root) root.style.backgroundColor = '#333';
@@ -1488,7 +1493,13 @@ export class Editor {
     }
   }
 
-  setBackdrop({ opacity, cellOpacity, popupOpacity }) {
+  setBackdrop({ opacity, cellOpacity, popupOpacity, revision }) {
+    // Native window updates and editor events race; applying a stale snapshot
+    // would re-tint the viewport with an older opacity after a newer one landed.
+    if (typeof revision === 'number') {
+      if (revision < this.backdropRevision) return;
+      this.backdropRevision = revision;
+    }
     if (typeof opacity === 'number') {
       this.backdrop.opacity = Math.max(0, Math.min(1, opacity));
     }
