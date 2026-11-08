@@ -81,7 +81,11 @@ Available interfaces: ~A"
 
 (defgeneric lem-if:invoke (implementation function))
 (defgeneric lem-if:get-background-color (implementation))
-(defgeneric lem-if:get-foreground-color (implementation))
+(defgeneric lem-if:get-foreground-color (implementation)
+  (:documentation "Return the frontend's RGB foreground color as a `color' struct.
+Frontends that have no notion of an RGB foreground (ncurses, the fake
+interface for tests) return NIL, so callers must treat NIL as \"unknown\".")
+  (:method (implementation) nil))
 (defgeneric lem-if:update-foreground (implementation color-name))
 (defgeneric lem-if:update-background (implementation color-name))
 (defgeneric lem-if:update-cursor-shape (implementation cursor-type)

@@ -55,7 +55,9 @@
   (update (current-multi-column-list)))
 
 (define-command multi-column-list/quit () ()
-  (quit (current-multi-column-list)))
+  "Quit the active multi-column list, if any."
+  (alexandria:when-let ((multi-column-list (current-multi-column-list)))
+    (quit multi-column-list)))
 
 (define-command multi-column-list/down () ()
   (popup-menu-down (multi-column-list-popup-menu (current-multi-column-list))))
@@ -197,23 +199,53 @@
    (column-width-list :initarg :column-width-list
                       :reader print-spec-column-width-list)))
 
+(defun resolve-color (color)
+  "Return COLOR as a `lem:color' struct, or NIL when it cannot be resolved.
+COLOR may be a `lem:color' struct, a base-color keyword (`:base00' and
+friends), a color string, or NIL.  A base color is looked up in the current
+theme and resolves to NIL when the theme does not define it.
+
+`ensure-color' is internal to lem-core: it is the one place that knows how to
+turn a base-color keyword into a theme value, so it is used here instead of
+`lem-if' or the public `foreground-color'."
+  (let ((resolved (lem-core::ensure-color color)))
+    (typecase resolved
+      (color resolved)
+      (string (parse-color resolved))
+      (t nil))))
+
 (defun darken-color (color &key (factor 0.5))
-  (let ((color (parse-color color)))
+  "Return COLOR darkened by FACTOR as a \"#RRGGBB\" color string.
+COLOR is accepted in any form `resolve-color' understands, so a theme's
+foreground may be NIL or a string while a frontend's foreground is a
+`lem:color'.  Return NIL instead of signaling when no color can be resolved,
+which lets callers fall back to a plain underline."
+  (alexandria:when-let ((color (resolve-color color)))
     (multiple-value-bind (h s v)
         (rgb-to-hsv color)
       (multiple-value-bind (r g b)
-          (hsv-to-rgb h
-                      s
-                      (* v (- 1 factor)))
-        (make-color r g b)))))
+          (hsv-to-rgb h s (* v (- 1 factor)))
+        (color-to-hex-string (make-color r g b))))))
+
+(defun header-underline ()
+  "Return the underline value used for a multi-column-list header line.
+A frontend that can color its underline gets the foreground darkened, taken
+from the theme or, when the theme has no foreground (as \"lem-default\"
+does), from `lem-if:get-foreground-color'.  Everything else, including
+frontends whose foreground is unknown, gets a plain underline (T)."
+  (if (underline-color-support-p (implementation))
+      (or (darken-color (or (foreground-color)
+                            (lem-if:get-foreground-color (implementation)))
+                        :factor 0.6)
+          t)
+      t))
 
 (defun put-header-attribute (start end)
+  "Put the header attribute on the text from START to END."
   (put-text-property start
                      end
                      :attribute (make-attribute
-                                 :underline (if (underline-color-support-p (implementation))
-                                                (darken-color (foreground-color) :factor 0.6)
-                                                t))))
+                                 :underline (header-underline))))
 
 (defmethod lem/popup-menu:write-header ((print-spec print-spec) point)
   (let* ((multi-column-list (print-spec-multi-column-list print-spec))
@@ -372,16 +404,21 @@
    (multi-column-list-popup-menu multi-column-list)))
 
 (defun check-current-item (multi-column-list)
+  "Toggle the checked state of the focused item, if there is one."
   (when (multi-column-list-use-check-p multi-column-list)
-    (let ((item (current-focus-item multi-column-list)))
+    (alexandria:when-let ((item (current-focus-item multi-column-list)))
       (setf (multi-column-list-item-checked-p item)
             (not (multi-column-list-item-checked-p item))))
     (update multi-column-list)))
 
 (defun checked-items (multi-column-list)
+  "Return the checked items, or the focused item when none is checked.
+Return NIL when nothing is checked and the list has no focus item, which
+happens when a search string filters out every item."
   (or (remove-if-not #'multi-column-list-item-checked-p
                      (multi-column-list-items multi-column-list))
-      (list (current-focus-item multi-column-list))))
+      (alexandria:when-let ((item (current-focus-item multi-column-list)))
+        (list item))))
 
 (defun collect-checked-items (multi-column-list)
   (mapcar #'unwrap (checked-items multi-column-list)))
