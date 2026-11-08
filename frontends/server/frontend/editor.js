@@ -423,13 +423,13 @@ class BaseSurface {
 }
 
 class CanvasSurface extends BaseSurface {
-  constructor({ editor, view, x, y, width, height, styles, isFloating, surfaceRole = 'main', border, cssClassName }) {
+  constructor({ editor, view, x, y, width, height, styles, isFloating, border, cssClassName }) {
     super({ editor });
     this.isFloating = Boolean(isFloating);
-    this.surfaceRole = surfaceRole;
 
     const canvas = this.setupCanvas(styles);
     this.setupDOM({ dom: canvas, isFloating, border, cssClassName });
+    this.updateBackdrop();
     this.move(x, y);
     this.resize(width, height);
 
@@ -464,19 +464,10 @@ class CanvasSurface extends BaseSurface {
     }
     ctx.clearRect(x, y, width, height);
     const isDefaultBg = !style || sameColor(style, editor.option.background);
-    if (this.surfaceRole === 'floating') {
-      // Floating wrapper already renders popupBackgroundColor() + CSS backdrop-filter;
-      // keep default cells transparent so they don't double-darken, and keep selection
-      // / menu focus highlights crisp inside the popup.
-      if (!isDefaultBg) {
-        drawBlock({ ctx, x, y, width, height, style });
-      }
-      return;
-    }
-    // Main / side / header / modeline surfaces: default background stays clear to
-    // expose the root viewport's single rgba tint + native CGS blur without
-    // per-cell seams; explicit cell backgrounds (gutters, highlight-line,
-    // region, modeline) use cellOpacity.
+    // Default cells stay clear so the wrapper's popupBackgroundColor() (floating) or
+    // the root viewport's single rgba tint + native CGS blur (main/side/header/
+    // modeline) shows through without per-cell seams; explicit cell backgrounds
+    // (gutters, highlight-line, region, modeline, menu focus) use cellOpacity.
     if (!isDefaultBg) {
       drawBlock({
         ctx,
@@ -612,7 +603,7 @@ class HTMLSurface extends BaseSurface {
     const iframe = document.createElement('iframe');
     this.setupDOM({ dom: iframe, isFloating, border });
     iframe.style.position = 'absolute';
-    iframe.style.backgroundColor = (editor.isTransparent() && !isFloating)
+    iframe.style.backgroundColor = editor.isTransparent()
       ? 'transparent'
       : option.background;
     iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
@@ -650,7 +641,7 @@ class HTMLSurface extends BaseSurface {
   updateBackdrop() {
     super.updateBackdrop();
     if (this.iframe) {
-      this.iframe.style.backgroundColor = (this.editor.isTransparent() && !this.isFloating)
+      this.iframe.style.backgroundColor = this.editor.isTransparent()
         ? 'transparent'
         : this.editor.option.background;
     }
@@ -1008,7 +999,6 @@ class View {
       editor: this.editor,
       border,
       isFloating,
-      surfaceRole: isFloating ? 'floating' : 'main',
       view: this,
       cssClassName: ((isFloating && border) ? 'lem-editor__floating-window--bordered' : null),
     });
@@ -1024,7 +1014,6 @@ class View {
       editor: this.editor,
       view: this,
       isFloating: this.kind === 'floating',
-      surfaceRole: this.kind === 'floating' ? 'floating' : 'modeline',
       border: 0,
       styles: { zIndex: zindex('modeline') },
       cssClassName: 'lem-editor__mode-line',
