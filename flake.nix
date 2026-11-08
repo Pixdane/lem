@@ -51,6 +51,11 @@
             ;; Load ASDF
             (load "${lem-base.asdfFasl}/asdf.${lem-base.faslExt}")
             (asdf:initialize-output-translations '(:output-translations :disable-cache :inherit-configuration))
+            ;; Keep the source-registry scan out of local build artifacts. This
+            ;; matters when a checkout carries direnv, qlot or vendored trees:
+            ;; they are not systems and only slow the scan down.
+            (dolist (dir '(".direnv" "result" ".qlot" "ocicl" "node_modules"))
+              (pushnew dir asdf/source-registry:*default-source-registry-exclusions* :test #'equal))
 
             ;; Load Systems
             (mapcar #'asdf:load-system (uiop:split-string (uiop:getenv "systems")))
