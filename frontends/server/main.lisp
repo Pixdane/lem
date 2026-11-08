@@ -36,7 +36,14 @@ quits by itself afterwards.")
 (defmethod server-listen ((runner websocket-server-runner) server)
   (let* ((null-stream (make-broadcast-stream))
          (*trace-output* null-stream)
-         (*error-output* null-stream))
+         (*error-output* null-stream)
+         ;; Hunchentoot applies this read/write timeout when CLACK creates the
+         ;; acceptor.  With the 20s default, an idle WebSocket read times out,
+         ;; websocket-driver retries once and then treats it as EOF, dropping
+         ;; idle clients after ~40s.  NIL keeps idle connections alive; sends
+         ;; are queued per connection, so a stalled client blocks only its own
+         ;; transport thread.
+         (hunchentoot:*default-connection-timeout* nil))
     (jsonrpc:server-listen server
                            :mode :websocket
                            :port (websocket-server-runner-port runner)
